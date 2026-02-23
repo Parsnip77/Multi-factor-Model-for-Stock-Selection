@@ -1,3 +1,23 @@
 # Local-only docs (never push to remote; project docs for remote will be written later)
 Instruction.md
 prompt.md
+
+# Tushare token is stored here; must never be committed
+src/config.py
+
+# Generated database file (regenerate with download_data(); too large for version control)
+data/*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.env
+venv/
+.venv/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
