@@ -6,6 +6,7 @@ src/config.py
 
 # Generated database file (regenerate with download_data(); too large for version control)
 data/*.db
+data/*.parquet
 
 # Python
 __pycache__/

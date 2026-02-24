@@ -8,8 +8,8 @@
 
 本项目是一个**多因子选股模型**的量化交易示例，使用 Python 实现从数据获取、因子构建到回测的完整流程。
 
-**当前阶段：数据层（ETL）+ 因子计算层 + 因子预处理层**  
-用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子；再通过预处理模块对原始因子执行去极值、标准化、中性化，输出模型可用的干净因子。
+**当前阶段：数据层（ETL）+ 因子计算层 + 因子预处理层（第一阶段完成）**  
+用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子；再通过预处理模块对原始因子执行去极值、标准化、中性化，最终由 `data_preparation_main.py` 串联全流程，将四张核对齐的宽表导出为 Parquet 文件，供后续回测使用。
 
 ---
 
@@ -18,20 +18,25 @@
 ```
 项目根目录/
 ├── data/
-│   ├── .gitkeep            # 保留空目录用于 git 追踪（数据文件本身不上传）
-│   └── stock_data.db       # SQLite 数据库（运行 download_data() 后生成）
+│   ├── .gitkeep                # 保留空目录用于 git 追踪（数据文件本身不上传）
+│   ├── stock_data.db           # SQLite 数据库（运行 download_data() 后生成）
+│   ├── prices.parquet          # 原始行情 + 复权因子（由总脚本生成）
+│   ├── meta.parquet            # 市值、行业、PE、PB（由总脚本生成）
+│   ├── factors_raw.parquet     # 原始 Alpha 因子（由总脚本生成）
+│   └── factors_clean.parquet   # 清洗后 Alpha 因子（由总脚本生成）
 ├── src/
-│   ├── __init__.py         # 标识 src 为 Python 包
-│   ├── config.py           # 全局配置（Token、日期范围、路径等）
-│   ├── data_loader.py      # DataEngine 类：数据下载与读取
-│   ├── alphas.py           # Alpha101 类：因子计算（101 Formulaic Alphas）
-│   └── preprocessor.py     # FactorCleaner 类：因子预处理（清洗）
+│   ├── __init__.py             # 标识 src 为 Python 包
+│   ├── config.py               # 全局配置（Token、日期范围、路径等）
+│   ├── data_loader.py          # DataEngine 类：数据下载与读取
+│   ├── alphas.py               # Alpha101 类：因子计算（101 Formulaic Alphas）
+│   └── preprocessor.py         # FactorCleaner 类：因子预处理（清洗）
 ├── notebooks/
-│   └── explore.ipynb       # Jupyter Notebook：数据探索与可视化
-├── .gitignore              # 版本控制忽略规则
-├── requirements.txt        # Python 依赖列表
-├── prompt.md               # 项目需求与规范（仅本地查阅）
-└── Instruction.md          # 本说明文档
+│   └── explore.ipynb           # Jupyter Notebook：数据探索与可视化
+├── data_preparation_main.py    # 第一阶段总脚本：串联所有组件，导出 Parquet
+├── .gitignore                  # 版本控制忽略规则
+├── requirements.txt            # Python 依赖列表
+├── prompt.md                   # 项目需求与规范（仅本地查阅）
+└── Instruction.md              # 本说明文档
 ```
 
 | 文件/目录 | 用途 |
@@ -41,6 +46,8 @@
 | `src/data_loader.py` | `DataEngine` 类：数据下载、缓存、读取 |
 | `src/alphas.py` | `Alpha101` 类：复现《101 Formulaic Alphas》中的 5 个因子 |
 | `src/preprocessor.py` | `FactorCleaner` 类：对原始因子执行去极值、标准化、中性化 |
+| `data_preparation_main.py` | 第一阶段总脚本：串联 DataEngine → Alpha101 → FactorCleaner，导出四张 Parquet |
+| `data/*.parquet` | 导出的宽表数据，共享主键 (trade_date, ts_code) |
 | `notebooks/explore.ipynb` | 数据探索 + Alpha 因子计算 + 因子清洗示例 |
 | `.gitignore` | 忽略 Token、数据库、本地文档等敏感/冗余文件 |
 | `requirements.txt` | `pip install -r requirements.txt` 所需依赖 |
@@ -237,7 +244,38 @@
 
 ---
 
-### 6. data/stock_data.db
+### 7. data_preparation_main.py
+
+- **用途**：第一阶段端到端总脚本，串联 `DataEngine → Alpha101 → FactorCleaner`，将全流程处理结果导出为四张 Parquet 文件。
+
+- **执行流程**：
+
+  | 步骤 | 操作 |
+  |------|------|
+  | 1 | 检查 `data/stock_data.db` 是否存在，缺失则报错退出 |
+  | 2 | 调用 `DataEngine.load_data()` 载入全量数据 |
+  | 3 | 调用 `Alpha101.get_all_alphas()` 计算原始 Alpha 因子（前复权） |
+  | 4 | 调用 `FactorCleaner.process_all()` 执行五步清洗流水线 |
+  | 5 | 将结果导出为四张 Parquet 文件（见下） |
+
+- **输出文件**（均存放于 `./data/`，主键逻辑对齐：`trade_date × ts_code`）：
+
+  | 文件 | 列 | 说明 |
+  |------|----|------|
+  | `prices.parquet` | trade_date, ts_code, open, high, low, close, volume, adj_factor | 原始（未复权）行情 + 复权因子 |
+  | `meta.parquet` | trade_date, ts_code, total_mv, industry, pe, pb | 每日基本面 + 静态行业分类 |
+  | `factors_raw.parquet` | trade_date, ts_code, alpha006, … | 原始因子值（保留 NaN） |
+  | `factors_clean.parquet` | trade_date, ts_code, alpha006, … | 清洗后因子值（NaN 填补为 0） |
+
+- **使用**：
+  ```bash
+  python data_preparation_main.py
+  ```
+  脚本会逐步打印每个阶段的状态和关键统计信息。
+
+---
+
+### 8. data/stock_data.db
 
 - **用途**：本地 SQLite 数据库，存储**四张表**：`daily_price`（含 amount）、`daily_basic`、`stock_info`、`adj_factor`。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。
@@ -263,12 +301,15 @@ engine.init_db()        # 建表 + 模式迁移（幂等）
 engine.download_data()  # 下载并缓存；中断后重跑可断点续传
 EOF
 
-# 4. 打开 Notebook 探索数据及因子示例
+# 4. 运行第一阶段总脚本（因子计算 + 清洗 + 导出 Parquet）
+python data_preparation_main.py
+
+# 5. （可选）打开 Notebook 交互探索数据及因子
 jupyter notebook notebooks/explore.ipynb
 ```
 
-> **耗时估算**：约 300 只股票 × 每股 3 次接口 + 限频 sleep，预计 15 ~ 40 分钟。  
-> 因子计算（`get_all_alphas()`）为纯内存运算，通常数秒内完成。
+> **耗时估算**：数据下载约 15 ~ 40 分钟（300 只股票 × 3 次接口 + 限频 sleep）。  
+> `data_preparation_main.py` 为纯内存运算，通常在 1 分钟内完成。
 
 ---
 
