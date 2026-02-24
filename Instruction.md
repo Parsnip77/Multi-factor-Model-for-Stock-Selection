@@ -128,8 +128,21 @@
   | `alpha006` | `-1 * correlation(open, volume, 10)` | 开盘价与成交量的滚动相关性取反 |
   | `alpha012` | `sign(delta(volume, 1)) * (-1 * delta(close, 1))` | 成交量方向乘以收盘价变动反向 |
   | `alpha038` | `(-1 * rank(ts_rank(close, 10))) * rank(close/open)` | 近期高位且高涨幅的股票做空 |
-  | `alpha041` | `sqrt(high * low) - vwap` | 高低价几何均值与成交均价之差（vwap ≈ (H+L+C)/3） |
+  | `alpha041` | `sqrt(high * low) - vwap` | 高低价几何均值与成交均价之差（精确 vwap） |
   | `alpha101` | `(close - open) / (high - low + 0.001)` | 日内动量：价格区间归一化的涨跌幅 |
+
+- **VWAP 计算**：`amount` 字段可用时使用精确公式 `amount × 10 / vol`；否则回退到典型价格 `(H+L+C)/3`。
+
+- **复权模式**（`adj_type` 参数，默认 `"forward"`）：
+
+  | 模式 | 公式 | 说明 |
+  |------|------|------|
+  | `"forward"` | `P × adj_factor / adj_factor_latest` | 前复权，最新价等于原始价 |
+  | `"backward"` | `P × adj_factor` | 后复权，完整体现历史涨幅 |
+  | `"raw"` | 不调整 | 直接使用数据库原始价格 |
+
+  > `vol` 和 `amount` 在任何复权模式下均**不调整**。  
+  > `adj_factor_latest` 默认取 `df_adj` 中的最后一行；也可通过 `latest_adj` 参数传入 `fetch_latest_adj_factor()` 的返回值以获得更精确的当日因子。
 
 - **已实现辅助函数**：`_rank`、`_delay`、`_delta`、`_corr`、`_cov`、`_stddev`、`_sum`、`_product`、`_ts_min`、`_ts_max`、`_ts_argmax`、`_ts_argmin`、`_ts_rank`、`_scale`、`_decay_linear`、`_sign`、`_log`、`_abs`、`_signed_power`
 
@@ -137,7 +150,7 @@
 
   | 方法 | 说明 |
   |------|------|
-  | `__init__(data_dict)` | 接收数据字典，将 MultiIndex DataFrame 拆解为宽表形式 |
+  | `__init__(data_dict, adj_type, latest_adj)` | 接收数据字典；自动计算精确 vwap 并应用复权 |
   | `alpha006()` … `alpha101()` | 各返回 wide-form DataFrame（行 = 日期，列 = 股票代码） |
   | `get_all_alphas()` | 计算所有已实现因子，返回 MultiIndex (date, code) × alpha 列的 DataFrame |
 
@@ -146,7 +159,14 @@
   from alphas import Alpha101
   data = DataEngine().load_data()
 
-  alpha = Alpha101(data)
+  alpha = Alpha101(data)                         # 前复权（默认）
+  alpha = Alpha101(data, adj_type='backward')    # 后复权
+  alpha = Alpha101(data, adj_type='raw')         # 不复权
+
+  # 使用 API 获取最新复权因子（更精确的前复权）
+  latest_adj = engine.fetch_latest_adj_factor(codes)
+  alpha = Alpha101(data, adj_type='forward', latest_adj=latest_adj)
+
   df = alpha.get_all_alphas()   # MultiIndex (date, code) × ['alpha006', ...]
   ```
 
@@ -156,7 +176,7 @@
 
 - **用途**：两部分演示：  
   - **Part 1**：数据库完整性校验（1.1 OHLCV+amount、1.2 adj_factor 历史浏览、1.3 市值、1.4 行业分布、1.5 缺失值检查）。  
-  - **Part 2**：Alpha 因子计算（单独宽表、合并长表、描述统计、NaN 覆盖率、最新截面）。
+  - **Part 2**：Alpha 因子计算（前复权价格 + 精确 vwap；单独宽表、合并长表、描述统计、NaN 覆盖率、最新截面）。
 - **使用**：
   ```bash
   jupyter notebook notebooks/explore.ipynb

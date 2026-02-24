@@ -16,8 +16,15 @@ Conventions:
     - rank()    : cross-sectional — ranks across stocks (columns) at each date (row).
     - ts_rank() : time-series    — ranks today's value within the past d days, per stock.
     - corr()    : time-series    — rolling pairwise correlation per stock column.
-    - vwap is approximated as (high + low + close) / 3  (typical price proxy).
-      Real vwap requires intraday or dollar-volume data not currently in the DB.
+    - vwap      : computed as amount * 10 / vol (amount in thousand CNY, vol in lots);
+                  falls back to (high + low + close) / 3 when amount is unavailable.
+    - vol and amount are never adjusted, regardless of adj_type.
+
+Price adjustment (adj_type):
+    'forward'  (default): P_adj = P_raw * adj_factor / adj_factor_latest
+                          latest = last row of stored adj_factor (or caller-supplied Series).
+    'backward'           : P_adj = P_raw * adj_factor
+    'raw'                : no adjustment applied.
 
 Raw factor values (including NaN and inf) are preserved; downstream cleaning
 is handled by a separate processing layer (to be implemented).
@@ -31,32 +38,102 @@ class Alpha101:
     """
     Compute selected alphas from '101 Formulaic Alphas'.
 
-    Input: the dictionary returned by DataEngine.load_data().
+    Input : the dictionary returned by DataEngine.load_data().
     Internally all series are pivoted to wide form (dates × codes) for
     efficient vectorized operations.
 
-    Usage:
-        data   = DataEngine().load_data()
-        engine = Alpha101(data)
+    Parameters
+    ----------
+    data_dict : dict
+        Dictionary from DataEngine.load_data().  Must contain 'df_price'
+        and 'df_mv'; 'df_adj' is required for any adj_type other than 'raw'.
+    adj_type : str, default 'forward'
+        Price adjustment mode.  One of:
+            'forward'  — P * adj_factor / adj_factor_latest (latest date in range)
+            'backward' — P * adj_factor
+            'raw'      — no adjustment
+    latest_adj : pd.Series or None
+        Optional pre-fetched latest adj_factor values indexed by ts_code,
+        e.g. from DataEngine.fetch_latest_adj_factor(codes).
+        When None, the last row of df_adj is used as the reference for
+        forward adjustment.
 
-        df_a6   = engine.alpha006()       # wide DataFrame: dates × codes
-        df_all  = engine.get_all_alphas() # long DataFrame: MultiIndex (date, code) × alphas
+    Usage:
+        data = DataEngine().load_data()
+
+        alpha = Alpha101(data)                          # forward adj (default)
+        alpha = Alpha101(data, adj_type='backward')     # backward adj
+        alpha = Alpha101(data, adj_type='raw')          # no adjustment
+
+        # For a more up-to-date forward reference factor:
+        latest = engine.fetch_latest_adj_factor(codes)
+        alpha  = Alpha101(data, adj_type='forward', latest_adj=latest)
+
+        df_a6   = alpha.alpha006()       # wide DataFrame: dates × codes
+        df_all  = alpha.get_all_alphas() # long DataFrame: MultiIndex (date, code) × alphas
     """
 
-    def __init__(self, data_dict: dict):
+    def __init__(
+        self,
+        data_dict: dict,
+        adj_type: str = "forward",
+        latest_adj: pd.Series = None,
+    ):
+        if adj_type not in ("forward", "backward", "raw"):
+            raise ValueError(f"adj_type must be 'forward', 'backward', or 'raw'; got '{adj_type}'")
+
         df_price = data_dict["df_price"]   # MultiIndex (date, code)
         df_mv    = data_dict["df_mv"]      # MultiIndex (date, code)
+        df_adj   = data_dict.get("df_adj") # MultiIndex (date, code), may be absent
 
-        # Unstack to wide form: rows = date, columns = code
-        self.open  = df_price["open"].unstack("code")
-        self.high  = df_price["high"].unstack("code")
-        self.low   = df_price["low"].unstack("code")
-        self.close = df_price["close"].unstack("code")
-        self.vol   = df_price["vol"].unstack("code")
+        # ---- Unstack raw price series (wide form: dates × codes) ----
+        open_raw  = df_price["open"].unstack("code")
+        high_raw  = df_price["high"].unstack("code")
+        low_raw   = df_price["low"].unstack("code")
+        close_raw = df_price["close"].unstack("code")
+        self.vol  = df_price["vol"].unstack("code")   # never adjusted
+
+        # ---- Precise VWAP: amount (thousand CNY) × 10 / vol (lots) ----
+        # amount (千元) × 1000 / (vol (手) × 100) = amount × 10 / vol  (元/股)
+        if "amount" in df_price.columns:
+            amount_wide = df_price["amount"].unstack("code")
+            vwap_raw = (amount_wide * 10).div(self.vol)
+            # Fallback to typical price where amount or vol is missing / zero
+            fallback = (high_raw + low_raw + close_raw) / 3
+            valid = amount_wide.notna() & (self.vol > 0)
+            vwap_raw = vwap_raw.where(valid, fallback)
+        else:
+            vwap_raw = (high_raw + low_raw + close_raw) / 3
+
+        # ---- Price adjustment ----
+        if adj_type != "raw" and df_adj is not None and not df_adj.empty:
+            adj_wide = df_adj["adj_factor"].unstack("code")
+            # Reindex to price dates; forward-fill gaps (non-trading days in adj table)
+            adj_wide = adj_wide.reindex(open_raw.index).ffill()
+
+            if adj_type == "forward":
+                if latest_adj is None:
+                    # Use the last available row in the stored date range as reference
+                    latest_row = adj_wide.iloc[-1]
+                else:
+                    latest_row = latest_adj.reindex(adj_wide.columns)
+                adj_ratio = adj_wide.div(latest_row, axis=1)
+            else:  # 'backward'
+                adj_ratio = adj_wide
+
+            self.open  = open_raw.mul(adj_ratio)
+            self.high  = high_raw.mul(adj_ratio)
+            self.low   = low_raw.mul(adj_ratio)
+            self.close = close_raw.mul(adj_ratio)
+            self.vwap  = vwap_raw.mul(adj_ratio)   # vwap tracks the same price scale
+        else:
+            self.open  = open_raw
+            self.high  = high_raw
+            self.low   = low_raw
+            self.close = close_raw
+            self.vwap  = vwap_raw
 
         self.returns  = self.close.pct_change()
-        # Typical-price proxy for vwap (real vwap requires dollar volume)
-        self.vwap     = (self.high + self.low + self.close) / 3
         self.total_mv = df_mv["total_mv"].unstack("code")
 
     # ------------------------------------------------------------------
@@ -206,7 +283,7 @@ class Alpha101:
         Geometric mean of the day's high and low minus vwap.
         Positive when the geometric mean exceeds the typical price;
         may signal upward intraday momentum.
-        Note: vwap approximated as (high + low + close) / 3.
+        Uses precise vwap = amount * 10 / vol when available.
         """
         return np.power(self.high * self.low, 0.5) - self.vwap
 
