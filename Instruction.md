@@ -8,7 +8,7 @@
 
 本项目是一个**多因子选股模型**的量化交易示例，使用 Python 实现从数据获取、因子构建到回测的完整流程。
 
-**当前阶段：数据层（ETL）+ 因子计算层 + 因子预处理层（第一阶段完成）**  
+**当前阶段：数据层（ETL）+ 因子计算层 + 因子预处理层（第一阶段完成）+ 因子评估层（第二阶段完成）**  
 用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子；再通过预处理模块对原始因子执行去极值、标准化、中性化，最终由 `data_preparation_main.py` 串联全流程，将四张核对齐的宽表导出为 Parquet 文件，供后续回测使用。
 
 ---
@@ -29,10 +29,14 @@
 │   ├── config.py               # 全局配置（Token、日期范围、路径等）
 │   ├── data_loader.py          # DataEngine 类：数据下载与读取
 │   ├── alphas.py               # Alpha101 类：因子计算（101 Formulaic Alphas）
-│   └── preprocessor.py         # FactorCleaner 类：因子预处理（清洗）
+│   ├── preprocessor.py         # FactorCleaner 类：因子预处理（清洗）
+│   ├── targets.py              # calc_forward_return：未来收益率标签生成
+│   └── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
 ├── notebooks/
 │   └── explore.ipynb           # Jupyter Notebook：数据探索与可视化
+├── plots/                      # IC 分析图表输出目录（由 analyze_main.py 自动创建）
 ├── data_preparation_main.py    # 第一阶段总脚本：串联所有组件，导出 Parquet
+├── analyze_main.py             # 第二阶段总脚本：因子 IC 评估与有效因子筛选
 ├── .gitignore                  # 版本控制忽略规则
 ├── requirements.txt            # Python 依赖列表
 ├── prompt.md                   # 项目需求与规范（仅本地查阅）
@@ -46,7 +50,11 @@
 | `src/data_loader.py` | `DataEngine` 类：数据下载、缓存、读取 |
 | `src/alphas.py` | `Alpha101` 类：复现《101 Formulaic Alphas》中的 5 个因子 |
 | `src/preprocessor.py` | `FactorCleaner` 类：对原始因子执行去极值、标准化、中性化 |
+| `src/targets.py` | `calc_forward_return(prices_df, d)`：计算 d 日未来收益率标签 |
+| `src/ic_analyzer.py` | `calc_ic` / `calc_ic_metrics` / `plot_ic`：截面 Spearman IC 评估 |
 | `data_preparation_main.py` | 第一阶段总脚本：串联 DataEngine → Alpha101 → FactorCleaner，导出四张 Parquet |
+| `analyze_main.py` | 第二阶段总脚本：载入 Parquet，循环单因子 IC 检验，筛选有效 alpha |
+| `plots/` | IC 分析图表输出目录（`analyze_main.py` 运行时自动创建），每个因子生成 `{factor}_ic.png` |
 | `data/*.parquet` | 导出的宽表数据，共享主键 (trade_date, ts_code) |
 | `notebooks/explore.ipynb` | 数据探索 + Alpha 因子计算 + 因子清洗示例 |
 | `.gitignore` | 忽略 Token、数据库、本地文档等敏感/冗余文件 |
@@ -275,7 +283,80 @@
 
 ---
 
-### 8. data/stock_data.db
+### 8. src/targets.py
+
+- **用途**：标签生成模块，计算未来 d 日收益率，为 IC 分析提供 target。
+
+- **核心函数**：
+
+  | 函数 | 说明 |
+  |------|------|
+  | `calc_forward_return(prices_df, d)` | 输入平表 prices_df（含 trade_date / ts_code / close）和前向天数 d，计算 `(close_{T+d} - close_T) / close_T`，返回 MultiIndex `(trade_date, ts_code)` × `forward_return` 的长表 |
+
+- **使用示例**：
+  ```python
+  import pandas as pd
+  from targets import calc_forward_return
+
+  prices_df = pd.read_parquet("data/prices.parquet")
+  target_df = calc_forward_return(prices_df, d=5)  # 5-day forward return
+  ```
+
+---
+
+### 9. src/ic_analyzer.py
+
+- **用途**：因子 IC（信息系数）评估模块，衡量因子值与未来收益率的截面相关性。
+
+- **核心函数**：
+
+  | 函数 | 说明 |
+  |------|------|
+  | `calc_ic(factors_df, target_df)` | 按 `(trade_date, ts_code)` merge 合并；`groupby('trade_date')` 计算截面 Spearman 相关；返回 `ic_series`（index = trade_date） |
+  | `calc_ic_metrics(ic_series)` | 计算 IC 均值、标准差、ICIR（= 均值 / 标准差），返回字典 |
+  | `plot_ic(ic_series, factor_name, show)` | 绘制 IC 时间序列柱状图 + 累计 IC 折线图双子图，返回 `Figure` 对象 |
+
+- **使用示例**：
+  ```python
+  from ic_analyzer import calc_ic, calc_ic_metrics, plot_ic
+
+  ic_series = calc_ic(single_factor_df, target_df)
+  metrics   = calc_ic_metrics(ic_series)  # {'ic_mean': ..., 'ic_std': ..., 'icir': ...}
+  plot_ic(ic_series, factor_name="alpha006")
+  ```
+
+---
+
+### 10. analyze_main.py
+
+- **用途**：第二阶段端到端总脚本，串联 targets → ic_analyzer，逐因子输出 IC 评估报告，并筛选有效因子。
+
+- **执行流程**：
+
+  | 步骤 | 操作 |
+  |------|------|
+  | 1 | 载入 `prices.parquet` 与 `factors_clean.parquet` |
+  | 2 | 调用 `calc_forward_return(prices_df, d=5)` 生成 target |
+  | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，展示图表 |
+  | 4 | 筛选满足 `|IC mean| > 2%` 且 `|ICIR| > 0.5` 的因子并输出列表 |
+
+- **使用**：
+  ```bash
+  python analyze_main.py
+  ```
+
+- **可调配置**（脚本顶部常量）：
+
+  | 变量 | 默认值 | 说明 |
+  |------|--------|------|
+  | `FORWARD_DAYS` | `1` | 未来收益率天数 |
+  | `IC_MEAN_THRESHOLD` | `0.02` | IC 均值绝对值阈值 |
+  | `ICIR_THRESHOLD` | `0.50` | ICIR 绝对值阈值 |
+  | `SHOW_PLOTS` | `True` | 是否交互展示 IC 图表 |
+
+---
+
+### 11. data/stock_data.db
 
 - **用途**：本地 SQLite 数据库，存储**四张表**：`daily_price`（含 amount）、`daily_basic`、`stock_info`、`adj_factor`。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。
@@ -304,12 +385,16 @@ EOF
 # 4. 运行第一阶段总脚本（因子计算 + 清洗 + 导出 Parquet）
 python data_preparation_main.py
 
-# 5. （可选）打开 Notebook 交互探索数据及因子
+# 5. 运行第二阶段总脚本（因子 IC 评估 + 有效因子筛选）
+python analyze_main.py
+
+# 6. （可选）打开 Notebook 交互探索数据及因子
 jupyter notebook notebooks/explore.ipynb
 ```
 
 > **耗时估算**：数据下载约 15 ~ 40 分钟（300 只股票 × 3 次接口 + 限频 sleep）。  
-> `data_preparation_main.py` 为纯内存运算，通常在 1 分钟内完成。
+> `data_preparation_main.py` 为纯内存运算，通常在 1 分钟内完成。  
+> `analyze_main.py` 为纯内存运算，通常在 1 分钟内完成（含绘图）。
 
 ---
 
