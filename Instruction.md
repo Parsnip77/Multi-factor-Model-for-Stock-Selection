@@ -8,8 +8,8 @@
 
 本项目是一个**多因子选股模型**的量化交易示例，使用 Python 实现从数据获取、因子构建到回测的完整流程。
 
-**当前阶段：数据层（ETL）+ 因子计算层**  
-用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子，供后续回测使用。
+**当前阶段：数据层（ETL）+ 因子计算层 + 因子预处理层**  
+用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子；再通过预处理模块对原始因子执行去极值、标准化、中性化，输出模型可用的干净因子。
 
 ---
 
@@ -24,7 +24,8 @@
 │   ├── __init__.py         # 标识 src 为 Python 包
 │   ├── config.py           # 全局配置（Token、日期范围、路径等）
 │   ├── data_loader.py      # DataEngine 类：数据下载与读取
-│   └── alphas.py           # Alpha101 类：因子计算（101 Formulaic Alphas）
+│   ├── alphas.py           # Alpha101 类：因子计算（101 Formulaic Alphas）
+│   └── preprocessor.py     # FactorCleaner 类：因子预处理（清洗）
 ├── notebooks/
 │   └── explore.ipynb       # Jupyter Notebook：数据探索与可视化
 ├── .gitignore              # 版本控制忽略规则
@@ -39,7 +40,8 @@
 | `src/config.py` | 全局参数配置，包含 Tushare Token（不上传至 git） |
 | `src/data_loader.py` | `DataEngine` 类：数据下载、缓存、读取 |
 | `src/alphas.py` | `Alpha101` 类：复现《101 Formulaic Alphas》中的 5 个因子 |
-| `notebooks/explore.ipynb` | 数据探索 + Alpha 因子计算示例 |
+| `src/preprocessor.py` | `FactorCleaner` 类：对原始因子执行去极值、标准化、中性化 |
+| `notebooks/explore.ipynb` | 数据探索 + Alpha 因子计算 + 因子清洗示例 |
 | `.gitignore` | 忽略 Token、数据库、本地文档等敏感/冗余文件 |
 | `requirements.txt` | `pip install -r requirements.txt` 所需依赖 |
 
@@ -172,11 +174,60 @@
 
 ---
 
-### 5. notebooks/explore.ipynb
+### 5. src/preprocessor.py
 
-- **用途**：两部分演示：  
+- **用途**：因子预处理模块，将 `Alpha101.get_all_alphas()` 输出的**原始因子**清洗为**可直接输入模型的因子**，封装为 `FactorCleaner` 类。
+
+- **核心方法**：
+
+  | 方法 | 说明 |
+  |------|------|
+  | `__init__(data_dict)` | 从数据字典中提取对数市值（宽表）和行业 dummy 矩阵，作为中性化回归的基准 |
+  | `winsorize(factor_df, method, limits)` | 截面去极值；`method='mad'`（默认）使用中位数绝对偏差，`method='sigma'` 使用均值±标准差 |
+  | `standardize(factor_df)` | 截面 Z-score 标准化：\(Z = (X - \mu) / \sigma\) |
+  | `neutralize(factor_df)` | 截面 OLS 回归：`Factor = β · [log_mv, industry_dummies] + ε`，返回残差 ε |
+  | `process_all(raw_alphas_df)` | 完整五步流水线（见下），返回 `df_clean_factors` |
+
+- **`process_all` 流水线**（按顺序）：
+
+  | 步骤 | 操作 | 目的 |
+  |------|------|------|
+  | 1. 异常值初筛 | ±inf → NaN | 防止均值/方差计算出现数学错误 |
+  | 2. 去极值 | MAD-based 截断（Median ± 3×1.4826×MAD） | 压缩尾部风险，保护后续 OLS 回归 |
+  | 3. 初步标准化 | Z-score | 统一量纲，提升数值稳定性 |
+  | 4. 中性化 | OLS 残差（剥离市值 + 行业偏好） | 保留纯 Alpha，消除系统性偏差 |
+  | 5. 二次标准化 | Z-score on residuals | 使残差在不同日期间具有可比性 |
+  | 6. 填补 NaN | 将缺失值替换为 0 | 统一维度，方便后续矩阵运算 |
+
+- **输入**：
+  ```python
+  data_dict     # DataEngine.load_data() 的返回值（需含 df_mv 和 df_industry）
+  raw_alphas_df # Alpha101.get_all_alphas() 的返回值
+                # MultiIndex (date, code) × alpha 列，保留 NaN/inf
+  ```
+
+- **输出**：
+  ```python
+  df_clean_factors  # MultiIndex (date, code) × alpha 列
+                    # 与输入相同结构，NaN 已填补为 0
+  ```
+
+- **使用示例**：
+  ```python
+  from preprocessor import FactorCleaner
+
+  cleaner = FactorCleaner(data)            # data = engine.load_data()
+  df_clean = cleaner.process_all(df_alphas)  # df_alphas = alpha.get_all_alphas()
+  ```
+
+---
+
+### 6. notebooks/explore.ipynb
+
+- **用途**：三部分演示：  
   - **Part 1**：数据库完整性校验（1.1 OHLCV+amount、1.2 adj_factor 历史浏览、1.3 市值、1.4 行业分布、1.5 缺失值检查）。  
-  - **Part 2**：Alpha 因子计算（前复权价格 + 精确 vwap；单独宽表、合并长表、描述统计、NaN 覆盖率、最新截面）。
+  - **Part 2**：Alpha 因子计算（前复权价格 + 精确 vwap；单独宽表、合并长表、描述统计、NaN 覆盖率、最新截面）。  
+  - **Part 3**：因子清洗（`FactorCleaner.process_all()` 输出的清洗因子；描述统计、零填充率、最新截面对比）。
 - **使用**：
   ```bash
   jupyter notebook notebooks/explore.ipynb
