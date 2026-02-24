@@ -31,7 +31,8 @@
 │   ├── alphas.py               # Alpha101 类：因子计算（101 Formulaic Alphas）
 │   ├── preprocessor.py         # FactorCleaner 类：因子预处理（清洗）
 │   ├── targets.py              # calc_forward_return：未来收益率标签生成
-│   └── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
+│   ├── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
+│   └── backtester.py           # LayeredBacktester：分层回测（分组、绩效指标、累计净值图）
 ├── notebooks/
 │   └── explore.ipynb           # Jupyter Notebook：数据探索与可视化
 ├── plots/                      # IC 分析图表输出目录（由 analyze_main.py 自动创建）
@@ -52,9 +53,10 @@
 | `src/preprocessor.py` | `FactorCleaner` 类：对原始因子执行去极值、标准化、中性化 |
 | `src/targets.py` | `calc_forward_return(prices_df, d)`：计算 d 日未来收益率标签 |
 | `src/ic_analyzer.py` | `calc_ic` / `calc_ic_metrics` / `plot_ic`：截面 Spearman IC 评估 |
+| `src/backtester.py` | `LayeredBacktester`：分层回测，含绩效指标计算与累计净值绘图 |
 | `data_preparation_main.py` | 第一阶段总脚本：串联 DataEngine → Alpha101 → FactorCleaner，导出四张 Parquet |
 | `analyze_main.py` | 第二阶段总脚本：载入 Parquet，循环单因子 IC 检验，筛选有效 alpha |
-| `plots/` | IC 分析图表输出目录（`analyze_main.py` 运行时自动创建），每个因子生成 `{factor}_ic.png` |
+| `plots/` | 图表输出目录（`analyze_main.py` 运行时自动创建），每个因子生成 `{factor}_ic.png` 和 `{factor}_backtest.png` |
 | `data/*.parquet` | 导出的宽表数据，共享主键 (trade_date, ts_code) |
 | `notebooks/explore.ipynb` | 数据探索 + Alpha 因子计算 + 因子清洗示例 |
 | `.gitignore` | 忽略 Token、数据库、本地文档等敏感/冗余文件 |
@@ -356,7 +358,51 @@
 
 ---
 
-### 11. data/stock_data.db
+### 11. src/backtester.py
+
+- **用途**：分层回测模块，将因子值按截面分位数切分为 N 组，计算各组等权收益，输出绩效指标表格与累计净值图。封装为 `LayeredBacktester` 类。
+
+- **类接口**：
+
+  | 方法 | 说明 |
+  |------|------|
+  | `__init__(factor_df, target_df, num_groups=5, rf=0.03, plots_dir=None)` | 接收单因子平表与 target，merge 并 dropna |
+  | `run_backtest()` | 执行完整 5 步回测，返回绩效指标 DataFrame |
+  | `plot(show=True)` | 绘制 G1..GN + L-S 累计净值折线图，保存至 `plots_dir` |
+
+- **5 步回测逻辑**：
+
+  | 步骤 | 内容 |
+  |------|------|
+  | 1. 分箱 | 每日按因子值 `rank` 后 `pd.qcut` 切成 N 组（G1 最小，GN 最大） |
+  | 2. 等权 | 组内所有股票等权，无需额外权重计算 |
+  | 3. 组收益 | `groupby(['trade_date', 'group'])['forward_return'].mean().unstack()` |
+  | 4. 多空对冲 | `L-S = G_N - G_1`，剥离大盘 Beta，反映纯选股能力 |
+  | 5. 绩效指标 | 对每列（G1..GN + L-S）计算累积收益、年化收益、年化波动率、夏普比率、最大回撤 |
+
+- **绩效指标公式**：
+
+  | 指标 | 公式 |
+  |------|------|
+  | 累积收益 | `(1+r).cumprod() - 1` |
+  | 年化收益 | `(1 + cum_ret)^(252/N) - 1` |
+  | 年化波动率 | `r.std() × √252` |
+  | 夏普比率 | `(ann_ret - rf) / ann_vol`，`rf` 默认 0.03 |
+  | 最大回撤 | `min(cumval / cumval.cummax() - 1)` |
+
+- **使用示例**：
+  ```python
+  from backtester import LayeredBacktester
+
+  bt   = LayeredBacktester(single_factor_df, target_df, plots_dir=pathlib.Path("plots"))
+  perf = bt.run_backtest()   # DataFrame: rows=G1..G5+L-S, cols=Cum Return/Ann Return/...
+  print(perf)
+  bt.plot(show=True)         # 保存至 plots/{factor_col}_backtest.png
+  ```
+
+---
+
+### 12. data/stock_data.db
 
 - **用途**：本地 SQLite 数据库，存储**四张表**：`daily_price`（含 amount）、`daily_basic`、`stock_info`、`adj_factor`。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。

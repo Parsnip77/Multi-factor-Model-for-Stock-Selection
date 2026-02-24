@@ -11,15 +11,18 @@ Usage
 
 import sys
 import pathlib
+import warnings
 
 import pandas as pd
 
 # Allow importing from src/ without installing the package
 ROOT = pathlib.Path(__file__).parent
 sys.path.insert(0, str(ROOT / "src"))
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 from targets import calc_forward_return
 from ic_analyzer import calc_ic, calc_ic_metrics, plot_ic
+from backtester import LayeredBacktester
 
 # -----------------------------------------------------------------------
 # Configuration
@@ -119,12 +122,21 @@ def main() -> None:
         plot_ic(ic_series, factor_name=alpha, show=SHOW_PLOTS, save_path=save_path)
         _info(f"  Plot saved : {save_path}")
 
-        # 3.4 Selection criteria
+        # 3.4 Layered backtest
+        bt = LayeredBacktester(single_factor, target_df, plots_dir=PLOTS_DIR)
+        perf = bt.run_backtest()
+        _info("  Backtest metrics:")
+        print(perf.to_string())
+        bt_save = PLOTS_DIR / f"{alpha}_backtest.png"
+        bt.plot(show=SHOW_PLOTS)
+        _info(f"  Backtest plot saved : {bt_save}")
+
+        # 3.5 Selection criteria
         if abs(metrics["ic_mean"]) > IC_MEAN_THRESHOLD and abs(metrics["icir"]) > ICIR_THRESHOLD:
             effective_alphas.append(alpha)
             print(f"  >>> SELECTED  (|IC mean| > {IC_MEAN_THRESHOLD:.0%}  &  |ICIR| > {ICIR_THRESHOLD})")
         else:
-            print(f"      rejected  (threshold: |IC mean| > {IC_MEAN_THRESHOLD:.0%}  &  |ICIR| > {ICIR_THRESHOLD})")
+            print(f"      not selected  (threshold: |IC mean| > {IC_MEAN_THRESHOLD:.0%}  &  |ICIR| > {ICIR_THRESHOLD})")
 
     # ------------------------------------------------------------------
     # Step 4: Report effective alphas
