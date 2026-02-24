@@ -6,9 +6,10 @@ Data flow:
     SQLite           -->  DataEngine.load_data()       -->  pandas DataFrames
 
 Database tables:
-    daily_price  : daily OHLCV bars           (PK: code, date)
+    daily_price  : daily OHLCV + amount bars  (PK: code, date)
     daily_basic  : daily fundamentals         (PK: code, date)
     stock_info   : static stock metadata      (PK: code)
+    adj_factor   : price adjustment factors   (PK: code, date)
 """
 
 import sqlite3
@@ -32,8 +33,9 @@ class DataEngine:
 
     Implements a "download once, read repeatedly" caching strategy:
     - download_data() fetches from Tushare and persists to SQLite.
-      Stocks already present in the database are skipped automatically.
-      Delete stock_data.db to force a full re-download.
+      daily_price and adj_factor maintain independent cache sets so that
+      each can be supplemented without re-downloading the other.
+      Delete stock_data.db to force a full re-download of everything.
     - load_data() reads from the local SQLite and returns structured DataFrames.
 
     Typical usage:
@@ -44,6 +46,7 @@ class DataEngine:
         df_price    = data["df_price"]     # MultiIndex (date, code)
         df_mv       = data["df_mv"]        # MultiIndex (date, code)
         df_industry = data["df_industry"]  # indexed by code
+        df_adj      = data["df_adj"]       # MultiIndex (date, code)
     """
 
     def __init__(self):
@@ -66,18 +69,25 @@ class DataEngine:
     # ------------------------------------------------------------------
 
     def init_db(self) -> None:
-        """Create all tables if they do not already exist (idempotent)."""
+        """
+        Create all tables if they do not already exist (idempotent).
+
+        Also runs schema migrations for databases built with an older version:
+          - adds 'amount' column to daily_price if missing
+          - creates adj_factor table if missing
+        """
         conn = sqlite3.connect(self.db_path)
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS daily_price (
-                code   TEXT  NOT NULL,
-                date   TEXT  NOT NULL,
-                open   REAL,
-                high   REAL,
-                low    REAL,
-                close  REAL,
-                vol    REAL,
+                code    TEXT  NOT NULL,
+                date    TEXT  NOT NULL,
+                open    REAL,
+                high    REAL,
+                low     REAL,
+                close   REAL,
+                vol     REAL,
+                amount  REAL,
                 PRIMARY KEY (code, date)
             );
 
@@ -95,9 +105,25 @@ class DataEngine:
                 name      TEXT,
                 industry  TEXT
             );
+
+            CREATE TABLE IF NOT EXISTS adj_factor (
+                code        TEXT  NOT NULL,
+                date        TEXT  NOT NULL,
+                adj_factor  REAL,
+                PRIMARY KEY (code, date)
+            );
             """
         )
         conn.commit()
+
+        # Schema migration: add 'amount' column to daily_price if missing.
+        # SQLite does not support 'ADD COLUMN IF NOT EXISTS', so try/except is used.
+        try:
+            conn.execute("ALTER TABLE daily_price ADD COLUMN amount REAL")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # column already exists
+
         conn.close()
 
     # ------------------------------------------------------------------
@@ -134,13 +160,16 @@ class DataEngine:
         """
         Download data for all universe constituents and persist to SQLite.
 
-        Skips stocks that already have any rows in daily_price (cache hit).
-        To force a full refresh, delete data/stock_data.db and re-run.
+        daily_price and adj_factor maintain independent cache sets:
+        a stock cached in daily_price but missing from adj_factor will have
+        its adj_factor fetched on the next run, and vice versa.
+        Delete stock_data.db to force a full re-download of everything.
 
         Steps:
             1. Fetch constituent list via index_weight.
             2. Fetch stock metadata (name, industry) via stock_basic.
-            3. For each constituent: fetch daily OHLCV and daily fundamentals.
+            3. For each constituent: fetch daily OHLCV+amount and daily fundamentals.
+            4. For each constituent: fetch adj_factor history.
         """
         codes = self._get_constituents()
         print(f"Universe: {len(codes)} stocks  [{config.UNIVERSE_INDEX}]")
@@ -162,27 +191,28 @@ class DataEngine:
             conn.commit()
 
         # ---- Step 2: Daily price + fundamentals per stock ----
-        cached: set = set(
+        price_cached: set = set(
             pd.read_sql("SELECT DISTINCT code FROM daily_price", conn)[
                 "code"
             ].tolist()
         )
         n = len(codes)
-        skipped = 0
+        skipped_price = 0
 
+        print("Downloading daily price + fundamentals...")
         for i, ts_code in enumerate(codes):
-            if ts_code in cached:
-                skipped += 1
+            if ts_code in price_cached:
+                skipped_price += 1
                 continue
 
             try:
-                # OHLCV
+                # OHLCV + amount
                 time.sleep(config.SLEEP_PER_CALL)
                 price_df = self.pro.daily(
                     ts_code=ts_code,
                     start_date=config.START_DATE,
                     end_date=config.END_DATE,
-                    fields="ts_code,trade_date,open,high,low,close,vol",
+                    fields="ts_code,trade_date,open,high,low,close,vol,amount",
                 )
 
                 # Fundamentals (PE, PB, total market cap)
@@ -211,11 +241,78 @@ class DataEngine:
 
             if (i + 1) % 50 == 0:
                 conn.commit()
-                print(f"  Progress: {i + 1 - skipped} downloaded / {n} total")
+                print(f"  Progress: {i + 1 - skipped_price} downloaded / {n} total")
+
+        conn.commit()
+        print(f"Price done. Skipped (already cached): {skipped_price}.")
+
+        # ---- Step 3: Adjustment factors per stock (independent cache) ----
+        adj_cached: set = set(
+            pd.read_sql("SELECT DISTINCT code FROM adj_factor", conn)[
+                "code"
+            ].tolist()
+        )
+        skipped_adj = 0
+
+        print("Downloading adj_factor...")
+        for i, ts_code in enumerate(codes):
+            if ts_code in adj_cached:
+                skipped_adj += 1
+                continue
+
+            try:
+                time.sleep(config.SLEEP_PER_CALL)
+                adj_df = self.pro.adj_factor(
+                    ts_code=ts_code,
+                    start_date=config.START_DATE,
+                    end_date=config.END_DATE,
+                    fields="ts_code,trade_date,adj_factor",
+                )
+
+                if adj_df is not None and not adj_df.empty:
+                    adj_df = self._rename(adj_df)
+                    adj_df.to_sql(
+                        "adj_factor", conn, if_exists="append", index=False
+                    )
+
+            except Exception as exc:
+                print(f"  [WARN] adj_factor {ts_code}: {exc}")
+
+            if (i + 1) % 50 == 0:
+                conn.commit()
+                print(f"  Adj progress: {i + 1 - skipped_adj} / {n}")
 
         conn.commit()
         conn.close()
-        print(f"Done. Skipped (already cached): {skipped}. DB: {self.db_path}")
+        print(
+            f"Done. Price skipped: {skipped_price}, adj skipped: {skipped_adj}. "
+            f"DB: {self.db_path}"
+        )
+
+    def fetch_latest_adj_factor(self, codes: List[str]) -> pd.Series:
+        """
+        Fetch the most recent adj_factor for each stock directly from Tushare API.
+
+        Tries up to 10 consecutive calendar days back from today until data is
+        returned for the requested codes.  Returns a pd.Series indexed by ts_code.
+
+        Used for forward-adjustment: P_forward = P_raw * adj_factor / adj_factor_latest.
+        """
+        for offset in range(10):
+            query_date = (datetime.now() - timedelta(days=offset)).strftime("%Y%m%d")
+            try:
+                time.sleep(config.SLEEP_PER_CALL)
+                df = self.pro.adj_factor(
+                    trade_date=query_date,
+                    fields="ts_code,adj_factor",
+                )
+                if df is not None and not df.empty:
+                    df = df[df["ts_code"].isin(codes)]
+                    if not df.empty:
+                        return df.set_index("ts_code")["adj_factor"]
+            except Exception:
+                continue
+        raise RuntimeError("Could not fetch latest adj_factor within the last 10 days.")
 
     # ------------------------------------------------------------------
     # Load for analysis
@@ -228,11 +325,13 @@ class DataEngine:
         Returns:
             dict:
                 "df_price"    : DataFrame with MultiIndex (date, code),
-                                columns = [open, high, low, close, vol]
+                                columns = [open, high, low, close, vol, amount]
                 "df_mv"       : DataFrame with MultiIndex (date, code),
                                 columns = [total_mv]
                 "df_industry" : DataFrame indexed by code,
                                 columns = [name, industry]
+                "df_adj"      : DataFrame with MultiIndex (date, code),
+                                columns = [adj_factor]
         """
         conn = sqlite3.connect(self.db_path)
 
@@ -248,10 +347,14 @@ class DataEngine:
             "SELECT * FROM stock_info", conn, index_col="code"
         )
 
+        adj_df = pd.read_sql("SELECT * FROM adj_factor", conn)
+        adj_df = adj_df.set_index(["date", "code"]).sort_index()
+
         conn.close()
 
         return {
             "df_price": price_df,
             "df_mv": mv_df,
             "df_industry": info_df,
+            "df_adj": adj_df,
         }

@@ -84,29 +84,36 @@
 
   | 表名 | 字段 | 说明 |
   |------|------|------|
-  | `daily_price` | code, date, open, high, low, close, vol | 日线行情，主键 (code, date) |
+  | `daily_price` | code, date, open, high, low, close, vol, **amount** | 日线行情，主键 (code, date) |
   | `daily_basic` | code, date, pe, pb, total_mv | 每日基本面指标，主键 (code, date) |
   | `stock_info` | code, name, industry | 股票静态信息（行业分类），主键 code |
+  | **`adj_factor`** | code, date, adj_factor | 复权因子（前/后复权计算用），主键 (code, date) |
+
+  > **VWAP 计算**：`amount`（千元）× 1000 ÷（`vol`（手）× 100）= `amount × 10 / vol` 元/股。`vol` 与 `amount` 在任何情况下**不复权**。
+
+  > **模式迁移**：若数据库由旧版下载（缺少 `amount` 列或 `adj_factor` 表），调用 `init_db()` 可自动添加缺失列/表。缺少 `amount` 的历史行不会自动补充，需删除对应股票的 `daily_price` 数据后重新下载。
 
 - **核心方法**：
 
   | 方法 | 说明 |
   |------|------|
   | `__init__()` | 初始化 Tushare Pro API，解析数据库路径 |
-  | `init_db()` | 建表（幂等，可重复调用） |
-  | `download_data()` | 下载 price/basic；跳过已缓存数据，中断后可断点续传 |
+  | `init_db()` | 建表 + 模式迁移（幂等，可重复调用） |
+  | `download_data()` | 下载 price/basic/adj_factor；两套独立缓存，可单独补充缺失的 adj_factor |
+  | `fetch_latest_adj_factor(codes)` | 即时调用 Tushare API 获取最新复权因子，供前复权使用 |
   | `load_data()` | 从 SQLite 读取，返回结构化字典（见下） |
 
 - **`load_data()` 返回值**：
   ```python
   {
-    "df_price"    : DataFrame  # MultiIndex (date, code)，列：open, high, low, close, vol
+    "df_price"    : DataFrame  # MultiIndex (date, code)，列：open, high, low, close, vol, amount
     "df_mv"       : DataFrame  # MultiIndex (date, code)，列：total_mv
     "df_industry" : DataFrame  # index = code，列：name, industry
+    "df_adj"      : DataFrame  # MultiIndex (date, code)，列：adj_factor
   }
   ```
 
-- **缓存机制**：`download_data()` 记录已缓存的股票列表，跳过已完整下载的数据，支持中断后断点续传。如需完全重新下载，删除 `data/stock_data.db` 后重新运行即可。
+- **缓存机制**：`download_data()` 对 `daily_price` 和 `adj_factor` 维护**各自独立**的缓存集合，允许在 price 已缓存的情况下单独补充 adj_factor（反之亦然）。如需完全重新下载，删除 `data/stock_data.db` 后重新运行即可。
 
 ---
 
@@ -148,7 +155,7 @@
 ### 5. notebooks/explore.ipynb
 
 - **用途**：两部分演示：  
-  - **Part 1**：数据库完整性校验（OHLCV、行业分布、缺失值检查）。  
+  - **Part 1**：数据库完整性校验（1.1 OHLCV+amount、1.2 adj_factor 历史浏览、1.3 市值、1.4 行业分布、1.5 缺失值检查）。  
   - **Part 2**：Alpha 因子计算（单独宽表、合并长表、描述统计、NaN 覆盖率、最新截面）。
 - **使用**：
   ```bash
@@ -161,8 +168,9 @@
 
 ### 6. data/stock_data.db
 
-- **用途**：本地 SQLite 数据库，存储**三张表**：`daily_price`、`daily_basic`、`stock_info`。
+- **用途**：本地 SQLite 数据库，存储**四张表**：`daily_price`（含 amount）、`daily_basic`、`stock_info`、`adj_factor`。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。
+- **模式迁移**：重新调用 `init_db()` 可对旧版数据库自动补全 `amount` 列与 `adj_factor` 表。
 - **git 状态**：已在 `.gitignore` 中排除（文件较大，且可随时重新生成）。
 
 ---
@@ -175,12 +183,12 @@ pip install -r requirements.txt
 
 # 2. 填写 Token（编辑 src/config.py，将 'your_tushare_token' 替换为真实 Token）
 
-# 3. 建库并下载数据（每股约 2 次接口：daily + daily_basic）
+# 3. 建库并下载数据（每股约 3 次接口：daily + daily_basic + adj_factor）
 python - <<EOF
 import sys; sys.path.insert(0, 'src')
 from data_loader import DataEngine
 engine = DataEngine()
-engine.init_db()        # 建表（幂等）
+engine.init_db()        # 建表 + 模式迁移（幂等）
 engine.download_data()  # 下载并缓存；中断后重跑可断点续传
 EOF
 
@@ -188,7 +196,7 @@ EOF
 jupyter notebook notebooks/explore.ipynb
 ```
 
-> **耗时估算**：约 300 只股票 × 每股 2 次接口 + 限频 sleep，预计 10 ~ 25 分钟。  
+> **耗时估算**：约 300 只股票 × 每股 3 次接口 + 限频 sleep，预计 15 ~ 40 分钟。  
 > 因子计算（`get_all_alphas()`）为纯内存运算，通常数秒内完成。
 
 ---
