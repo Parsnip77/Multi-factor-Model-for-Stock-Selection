@@ -338,7 +338,7 @@
   | 步骤 | 操作 |
   |------|------|
   | 1 | 载入 `prices.parquet` 与 `factors_clean.parquet` |
-  | 2 | 调用 `calc_forward_return(prices_df, d=5)` 生成 target |
+  | 2 | 调用 `calc_forward_return(prices_df, d=1)` 生成 target |
   | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，展示图表 |
   | 4 | 筛选满足 `abs(IC mean) > 0.02` 且 `abs(ICIR) > 0.5` 的因子并输出列表 |
 

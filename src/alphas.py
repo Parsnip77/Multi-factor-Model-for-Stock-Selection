@@ -10,6 +10,7 @@ Implemented alphas (5):
     Alpha#38 : ((-1 * rank(Ts_Rank(close, 10))) * rank((close / open)))
     Alpha#41 : (((high * low)^0.5) - vwap)
     Alpha#101: ((close - open) / ((high - low) + .001))
+    Alpha_5_day_reversal: (close - delay(close,5)) / delay(close,5)
 
 Conventions:
     - All DataFrames are in wide form: index = date (str), columns = stock code (str).
@@ -296,6 +297,14 @@ class Alpha101:
         on days with no price movement.
         """
         return (self.close - self.open) / (self.high - self.low + 0.001)
+
+    def alpha_5_day_reversal(self) -> pd.DataFrame:
+        """
+        Alpha_5_day_reversal: (close - delay(close,5)) / delay(close,5)
+
+        Reversal of the last 5 days' closing prices.
+        """
+        return (self.close - self._delay(self.close, 5)) / self._delay(self.close, 5)   
 
     # ------------------------------------------------------------------
     # Aggregate

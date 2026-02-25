@@ -196,7 +196,7 @@ class FactorCleaner:
             df = self.standardize(df)
 
             # Step 4: Neutralize (core step — strip market-cap & industry bias)
-            df = self.neutralize(df)
+            # df = self.neutralize(df)
 
             # Step 5: Final standardize (re-center residuals to N(0,1))
             df = self.standardize(df)
