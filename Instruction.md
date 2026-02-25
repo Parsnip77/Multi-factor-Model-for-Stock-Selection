@@ -40,6 +40,7 @@
 ├── analyze_main.py             # 第二阶段总脚本：因子 IC 评估与有效因子筛选
 ├── .gitignore                  # 版本控制忽略规则
 ├── requirements.txt            # Python 依赖列表
+├── result.txt                  # analyze_main.py 自动生成的因子 summary
 ├── prompt.md                   # 项目需求与规范（仅本地查阅）
 └── Instruction.md              # 本说明文档
 ```
@@ -85,11 +86,11 @@
   | 变量 | 说明 | 默认值 |
   |------|------|--------|
   | `TUSHARE_TOKEN` | Tushare Pro Token（必填） | `"your_tushare_token"` |
-  | `START_DATE` | 数据开始日期（YYYYMMDD） | `"20220101"` |
-  | `END_DATE` | 数据结束日期（YYYYMMDD） | `"20250222"` |
+  | `START_DATE` | 数据开始日期（YYYYMMDD） | `"20190101"` |
+  | `END_DATE` | 数据结束日期（YYYYMMDD） | `"20231231"` |
   | `UNIVERSE_INDEX` | 股票池指数代码 | `"000300.SH"` |
   | `DB_PATH` | 数据库路径（相对于 src/） | `"../data/stock_data.db"` |
-  | `SLEEP_PER_CALL` | 每次 API 调用间隔（秒） | `0.2` |
+  | `SLEEP_PER_CALL` | 每次 API 调用间隔（秒） | `0.35` |
 
 - **注意**：此文件含 Token，已在 `.gitignore` 中排除，**切勿提交至 git**。
 
@@ -149,6 +150,7 @@
   | `alpha038` | `(-1 * rank(ts_rank(close, 10))) * rank(close/open)` | 近期高位且高涨幅的股票做空 |
   | `alpha041` | `sqrt(high * low) - vwap` | 高低价几何均值与成交均价之差（精确 vwap） |
   | `alpha101` | `(close - open) / (high - low + 0.001)` | 日内动量：价格区间归一化的涨跌幅 |
+  | `alpha_5_day_reversal` | `(close - delay(close, 5)) / delay(close, 5)` | 5日收盘价的反转因子 |
 
 - **VWAP 计算**：`amount` 字段可用时使用精确公式 `amount × 10 / vol`；否则回退到典型价格 `(H+L+C)/3`。
 
@@ -301,7 +303,7 @@
   from targets import calc_forward_return
 
   prices_df = pd.read_parquet("data/prices.parquet")
-  target_df = calc_forward_return(prices_df, d=5)  # 5-day forward return
+  target_df = calc_forward_return(prices_df, d=1)  # 1-day forward return
   ```
 
 ---
@@ -344,7 +346,8 @@
 
 - **使用**：
   ```bash
-  python analyze_main.py
+  python analyze_main.py > result.txt
+  # 关键统计信息打印到 result.txt
   ```
 
 - **可调配置**（脚本顶部常量）：
@@ -432,7 +435,7 @@ EOF
 python data_preparation_main.py
 
 # 5. 运行第二阶段总脚本（因子 IC 评估 + 有效因子筛选）
-python analyze_main.py
+python analyze_main.py > result.txt
 
 # 6. （可选）打开 Notebook 交互探索数据及因子
 jupyter notebook notebooks/explore.ipynb

@@ -120,7 +120,7 @@ def main() -> None:
         # 3.3 Plot IC chart and save to plots/
         save_path = PLOTS_DIR / f"{alpha}_ic.png"
         plot_ic(ic_series, factor_name=alpha, show=SHOW_PLOTS, save_path=save_path)
-        _info(f"  Plot saved : {save_path}")
+        _info(f"  IC chart saved.")
 
         # 3.4 Layered backtest
         bt = LayeredBacktester(single_factor, target_df, plots_dir=PLOTS_DIR)
@@ -129,7 +129,7 @@ def main() -> None:
         print(perf.to_string())
         bt_save = PLOTS_DIR / f"{alpha}_backtest.png"
         bt.plot(show=SHOW_PLOTS)
-        _info(f"  Backtest plot saved : {bt_save}")
+        _info(f"  Backtest plot saved.")
 
         # 3.5 Selection criteria
         if abs(metrics["ic_mean"]) > IC_MEAN_THRESHOLD and abs(metrics["icir"]) > ICIR_THRESHOLD:

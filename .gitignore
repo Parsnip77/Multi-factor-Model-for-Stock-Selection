@@ -1,12 +1,16 @@
 # Local-only docs (never push to remote; project docs for remote will be written later)
 prompt.md
 
+result.txt
+
 # Tushare token is stored here; must never be committed
 src/config.py
 
 # Generated database file (regenerate with download_data(); too large for version control)
 data/*.db
 data/*.parquet
+
+plots/*.png
 
 # Python
 __pycache__/
