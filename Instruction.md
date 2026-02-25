@@ -315,7 +315,7 @@
   from targets import calc_forward_return
 
   prices_df = pd.read_parquet("data/prices.parquet")
-  target_df = calc_forward_return(prices_df, d=1)  # 1-day forward return
+  target_df = calc_forward_return(prices_df, d=5)  # 5-day forward return
   ```
 
 ---
@@ -352,9 +352,9 @@
   | 步骤 | 操作 |
   |------|------|
   | 1 | 载入 `prices.parquet` 与 `factors_clean.parquet` |
-  | 2 | 调用 `calc_forward_return(prices_df, d=1)` 生成 target |
+  | 2 | 调用 `calc_forward_return(prices_df, d=5)` 生成 target |
   | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，展示图表 |
-  | 4 | 筛选满足 `abs(IC mean) > 0.02` 且 `abs(ICIR) > 0.3` 的因子并输出列表 |
+  | 4 | 筛选满足 `abs(IC mean) > 0.015` 且 `abs(ICIR) > 0.15` 的因子并输出列表 |
 
 - **使用**：
   ```bash
@@ -366,9 +366,9 @@
 
   | 变量 | 默认值 | 说明 |
   |------|--------|------|
-  | `FORWARD_DAYS` | `1` | 未来收益率天数 |
-  | `IC_MEAN_THRESHOLD` | `0.02` | IC 均值绝对值阈值 |
-  | `ICIR_THRESHOLD` | `0.30` | ICIR 绝对值阈值 |
+  | `FORWARD_DAYS` | `5` | 未来收益率天数 |
+  | `IC_MEAN_THRESHOLD` | `0.015` | IC 均值绝对值阈值 |
+  | `ICIR_THRESHOLD` | `0.15` | ICIR 绝对值阈值 |
   | `SHOW_PLOTS` | `False` | 是否交互展示 IC 图表 |
 
 ---
@@ -381,11 +381,11 @@
 
   | 方法 | 说明 |
   |------|------|
-  | `__init__(factor_df, target_df, num_groups=5, rf=0.03, forward_days=1, plots_dir=None)` | 接收单因子平表与 target，merge 并 dropna |
+  | `__init__(factor_df, target_df, num_groups=5, rf=0.03, forward_days=5, plots_dir=None)` | 接收单因子平表与 target，merge 并 dropna |
   | `run_backtest()` | 执行完整 5 步回测，返回绩效指标 DataFrame |
   | `plot(show=True)` | 绘制 G1..GN + L-S 累计净值折线图，保存至 `plots_dir` |
 
-  **`forward_days` 参数说明**：持仓天数，与 `calc_forward_return` 中的 `d` 保持一致（默认 1）。当 `forward_days > 1` 时，每行 `group_ret` 为 d 日累积收益；模块内部自动执行 `group_ret / forward_days`，将其近似为日收益后再复利，从而避免将 d 日收益当作 1 日收益连续复利导致的收益虚高。该近似基于滑动窗口的性质：`sum_T [R_d(T)/d] ≈ sum_t r_t`（大样本 N>>d 时误差可忽略）。精确的净收益回测请使用 `NetReturnBacktester`。
+  **`forward_days` 参数说明**：持仓天数，与 `calc_forward_return` 中的 `d` 保持一致（默认 5）。当 `forward_days > 1` 时，每行 `group_ret` 为 d 日累积收益；模块内部自动执行 `group_ret / forward_days`，将其近似为日收益后再复利，从而避免将 d 日收益当作 1 日收益连续复利导致的收益虚高。该近似基于滑动窗口的性质：`sum_T [R_d(T)/d] ≈ sum_t r_t`（大样本 N>>d 时误差可忽略）。精确的净收益回测请使用 `NetReturnBacktester`。
 
 - **5 步回测逻辑**：
 
@@ -478,7 +478,7 @@
 
   | 方法 | 说明 |
   |------|------|
-  | `__init__(alpha_df, prices_df, forward_days, cost_rate=0.0035, rf=0.03, plots_dir=None)` | 接收合成因子和价格表，延迟计算 |
+  | `__init__(alpha_df, prices_df, forward_days, cost_rate=0.002, rf=0.03, plots_dir=None)` | 接收合成因子和价格表，延迟计算 |
   | `run_backtest()` | 执行回测，返回 `pd.Series` 绩效指标 |
   | `plot(show=False)` | 绘制累计净值曲线，保存至 `plots_dir` |
 
@@ -499,7 +499,7 @@
   from net_backtester import NetReturnBacktester
 
   nb = NetReturnBacktester(synth_df, prices_df, forward_days=1,
-                           cost_rate=0.0035, plots_dir=pathlib.Path("plots"))
+                           cost_rate=0.002, plots_dir=pathlib.Path("plots"))
   print(nb.run_backtest())  # pd.Series: Ann Return, Sharpe, Breakeven Turnover ...
   nb.plot()                 # 保存至 plots/synthetic_factor_net.png
   ```

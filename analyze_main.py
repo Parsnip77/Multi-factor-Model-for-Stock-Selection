@@ -204,12 +204,12 @@ def main() -> None:
     if synth_df is None:
         _info("Skipped: no synthetic factor available (Step 5 was skipped).")
     else:
-        _info(f"cost_rate = {0.0035:.2%}  |  forward_days = {FORWARD_DAYS}  |  top 20%")
+        _info(f"cost_rate = {0.002:.2%}  |  forward_days = {FORWARD_DAYS}  |  top 20%")
         nb = NetReturnBacktester(
             synth_df,
             prices_df,
             forward_days=FORWARD_DAYS,
-            cost_rate=0.0035,
+            cost_rate=0.002,
             plots_dir=PLOTS_DIR,
         )
         net_summary = nb.run_backtest()
