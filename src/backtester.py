@@ -249,4 +249,5 @@ class LayeredBacktester:
         if show:
             plt.show()
 
+        plt.close(fig)
         return fig

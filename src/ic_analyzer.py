@@ -173,4 +173,5 @@ def plot_ic(
     if show:
         plt.show()
 
+    plt.close(fig)
     return fig

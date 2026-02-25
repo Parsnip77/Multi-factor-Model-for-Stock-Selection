@@ -23,6 +23,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 from targets import calc_forward_return
 from ic_analyzer import calc_ic, calc_ic_metrics, plot_ic
 from backtester import LayeredBacktester
+from factor_combiner import rolling_linear_combine
 
 # -----------------------------------------------------------------------
 # Configuration
@@ -32,7 +33,8 @@ PLOTS_DIR = ROOT / "plots"
 FORWARD_DAYS = 1          # d-day forward return
 IC_MEAN_THRESHOLD = 0.02  # minimum |IC mean| to keep a factor
 ICIR_THRESHOLD = 0.30     # minimum |ICIR| to keep a factor
-SHOW_PLOTS = True         # set False to suppress interactive charts
+SHOW_PLOTS = False         # set False to suppress interactive charts
+COMBINE_WINDOW = 60       # rolling OLS training window (trading days)
 
 
 # -----------------------------------------------------------------------
@@ -150,6 +152,33 @@ def main() -> None:
     else:
         _info("No alpha passed the selection criteria.")
         _info(f"  Criteria: |IC mean| > {IC_MEAN_THRESHOLD:.0%}  AND  |ICIR| > {ICIR_THRESHOLD}")
+
+    # ------------------------------------------------------------------
+    # Step 5: Synthetic factor via rolling OLS combination
+    # ------------------------------------------------------------------
+    _step("Step 5 / 5  —  Synthetic factor (rolling OLS)")
+
+    if len(effective_alphas) < 2:
+        _info(f"Skipped: need >= 2 effective alphas, got {len(effective_alphas)}.")
+    else:
+        _info(f"Combining {len(effective_alphas)} factors: {effective_alphas}")
+        _info(f"Rolling window = {COMBINE_WINDOW} trading days")
+
+        synth_df = rolling_linear_combine(
+            factors_df,
+            target_df,
+            factor_cols=effective_alphas,
+            window=COMBINE_WINDOW,
+        )
+        _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
+            f"(dates: {synth_df['trade_date'].nunique()})")
+
+        bt_synth = LayeredBacktester(synth_df, target_df, plots_dir=PLOTS_DIR)
+        perf_synth = bt_synth.run_backtest()
+        _info("  Backtest metrics (synthetic factor):")
+        print(perf_synth.to_string())
+        bt_synth.plot(show=SHOW_PLOTS)
+        _info("  Synthetic backtest plot saved.")
 
     print(f"\n{'=' * 62}")
     print("  Phase 2 factor analysis complete.")

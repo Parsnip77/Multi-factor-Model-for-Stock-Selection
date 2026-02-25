@@ -32,7 +32,8 @@
 │   ├── preprocessor.py         # FactorCleaner 类：因子预处理（清洗）
 │   ├── targets.py              # calc_forward_return：未来收益率标签生成
 │   ├── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
-│   └── backtester.py           # LayeredBacktester：分层回测（分组、绩效指标、累计净值图）
+│   ├── backtester.py           # LayeredBacktester：分层回测（分组、绩效指标、累计净值图）
+│   └── factor_combiner.py      # rolling_linear_combine：滚动 OLS 线性合成因子
 ├── notebooks/
 │   └── explore.ipynb           # Jupyter Notebook：数据探索与可视化
 ├── plots/                      # IC 分析图表输出目录（由 analyze_main.py 自动创建）
@@ -55,6 +56,7 @@
 | `src/targets.py` | `calc_forward_return(prices_df, d)`：计算 d 日未来收益率标签 |
 | `src/ic_analyzer.py` | `calc_ic` / `calc_ic_metrics` / `plot_ic`：截面 Spearman IC 评估 |
 | `src/backtester.py` | `LayeredBacktester`：分层回测，含绩效指标计算与累计净值绘图 |
+| `src/factor_combiner.py` | `rolling_linear_combine`：滚动 OLS 将多个 alpha 线性合成为一个合成因子 |
 | `data_preparation_main.py` | 第一阶段总脚本：串联 DataEngine → Alpha101 → FactorCleaner，导出四张 Parquet |
 | `analyze_main.py` | 第二阶段总脚本：载入 Parquet，循环单因子 IC 检验，筛选有效 alpha |
 | `plots/` | 图表输出目录（`analyze_main.py` 运行时自动创建），每个因子生成 `{factor}_ic.png` 和 `{factor}_backtest.png` |
@@ -415,7 +417,49 @@
 
 ---
 
-### 12. data/stock_data.db
+### 12. src/factor_combiner.py
+
+- **用途**：将多个有效 alpha 因子通过滚动 OLS 回归线性合成为一个综合因子（Synthetic Factor），供 `LayeredBacktester` 进行回测。
+
+- **核心函数**：`rolling_linear_combine(factors_df, target_df, factor_cols, window=60)`
+
+- **逻辑流程**：
+
+  | 步骤 | 操作 |
+  |------|------|
+  | 1. 数据准备 | merge factors + target，dropna，按日期排序 |
+  | 2. 滚动预测 | 对每个预测日 T，取 [T-window, T-1] 的数据拟合 OLS：`Y = β₁X₁ + ... + βₖXₖ` |
+  | 3. 打分 | 用拟合的 β 向量对预测日 T 当天的因子截面做矩阵乘积，得到预测得分 |
+  | 4. 裁剪 | 头部 window 个交易日无法形成训练集，自动跳过，仅保留有预测结果的日期 |
+  | 5. 标准化 | 对每日截面做 z-score 归一化（均值 0，标准差 1） |
+
+- **输入**：
+  - `factors_df`：平表，含 `trade_date` / `ts_code` / 若干 alpha 列
+  - `target_df`：forward_return 标签（MultiIndex 或平表均可）
+  - `factor_cols`：参与合成的 alpha 列名列表（至少 1 个）
+  - `window`：滚动训练窗口天数（默认 60）
+
+- **输出**：平表 DataFrame，列 `[trade_date, ts_code, synthetic_factor]`，z-score 标准化完毕，头尾空白已裁剪
+
+- **使用示例**：
+  ```python
+  from factor_combiner import rolling_linear_combine
+
+  synth_df = rolling_linear_combine(
+      factors_df, target_df,
+      factor_cols=["alpha021", "alpha042", "alpha054"],
+      window=60,
+  )
+  # 然后送入 LayeredBacktester
+  from backtester import LayeredBacktester
+  bt = LayeredBacktester(synth_df, target_df, plots_dir=pathlib.Path("plots"))
+  print(bt.run_backtest())
+  bt.plot()
+  ```
+
+---
+
+### 13. data/stock_data.db
 
 - **用途**：本地 SQLite 数据库，存储**四张表**：`daily_price`（含 amount）、`daily_basic`、`stock_info`、`adj_factor`。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。
