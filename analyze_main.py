@@ -195,6 +195,46 @@ def main() -> None:
         print(perf_synth.to_string())
         bt_synth.plot(show=SHOW_PLOTS)
         _info("  Synthetic backtest plot saved.")
+    '''
+    else:
+        _info(f"Combining {len(effective_alphas)} factors with equal weights: {effective_alphas}")
+
+        # --- Step 5: equal-weight combination ---
+        sub = factors_df[["trade_date", "ts_code"] + effective_alphas].copy()
+
+        # 1. Cross-sectional z-score normalisation per date
+        def _zscore(x: pd.Series) -> pd.Series:
+            std = x.std()
+            return (x - x.mean()) / std if std > 0 else pd.Series(0.0, index=x.index)
+
+        for col in effective_alphas:
+            sub[col] = sub.groupby("trade_date")[col].transform(_zscore)
+
+        # 2. Flip sign for reverse factors so high score => high expected return
+        for col in effective_alphas:
+            if effective_alphas_ic_mean[col] < 0:
+                _info(f"  Reverse factor ({col}): negating values.")
+                sub[col] = -sub[col]
+
+        # 3. Equal-weight average
+        sub["synthetic_factor"] = sub[effective_alphas].mean(axis=1)
+
+        # 4. Drop rows where synthetic_factor is NaN
+        sub = sub.dropna(subset=["synthetic_factor"])
+
+        synth_df = sub[["trade_date", "ts_code", "synthetic_factor"]].copy()
+
+        _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
+            f"(dates: {synth_df['trade_date'].nunique()})")
+
+        bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
+        perf_synth = bt_synth.run_backtest()
+        _info("  Backtest metrics (synthetic factor):")
+        print(perf_synth.to_string())
+        bt_synth.plot(show=SHOW_PLOTS)
+        _info("  Synthetic backtest plot saved.")
+
+    '''
 
     # ------------------------------------------------------------------
     # Step 6: Net-return backtest with transaction costs
