@@ -12,7 +12,7 @@ src/config.py
 data/*.db
 data/*.parquet
 
-plots/*.png
+plots/
 
 # Python
 __pycache__/
