@@ -42,7 +42,6 @@
 ├── .gitignore                  # 版本控制忽略规则
 ├── requirements.txt            # Python 依赖列表
 ├── result.txt                  # analyze_main.py 自动生成的因子 summary
-├── prompt.md                   # 项目需求与规范（仅本地查阅）
 └── Instruction.md              # 本说明文档
 ```
 
@@ -369,7 +368,7 @@
   | `FORWARD_DAYS` | `1` | 未来收益率天数 |
   | `IC_MEAN_THRESHOLD` | `0.02` | IC 均值绝对值阈值 |
   | `ICIR_THRESHOLD` | `0.30` | ICIR 绝对值阈值 |
-  | `SHOW_PLOTS` | `True` | 是否交互展示 IC 图表 |
+  | `SHOW_PLOTS` | `False` | 是否交互展示 IC 图表 |
 
 ---
 
