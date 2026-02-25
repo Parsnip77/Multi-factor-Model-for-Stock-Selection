@@ -33,7 +33,8 @@
 │   ├── targets.py              # calc_forward_return：未来收益率标签生成
 │   ├── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
 │   ├── backtester.py           # LayeredBacktester：分层回测（分组、绩效指标、累计净值图）
-│   └── factor_combiner.py      # rolling_linear_combine：滚动 OLS 线性合成因子
+│   ├── factor_combiner.py      # rolling_linear_combine：滚动 OLS 线性合成因子
+│   └── net_backtester.py       # NetReturnBacktester：考虑摩擦成本的纯多头重叠组合回测
 ├── notebooks/
 │   └── explore.ipynb           # Jupyter Notebook：数据探索与可视化
 ├── plots/                      # IC 分析图表输出目录（由 analyze_main.py 自动创建）
@@ -56,6 +57,7 @@
 | `src/ic_analyzer.py` | `calc_ic` / `calc_ic_metrics` / `plot_ic`：截面 Spearman IC 评估 |
 | `src/backtester.py` | `LayeredBacktester`：分层回测，含绩效指标计算与累计净值绘图 |
 | `src/factor_combiner.py` | `rolling_linear_combine`：滚动 OLS 将多个 alpha 线性合成为一个合成因子 |
+| `src/net_backtester.py` | `NetReturnBacktester`：纯多头重叠组合回测，含摩擦成本、换手率、盈亏平衡换手率 |
 | `data_preparation_main.py` | 第一阶段总脚本：串联 DataEngine → Alpha101 → FactorCleaner，导出四张 Parquet |
 | `analyze_main.py` | 第二阶段总脚本：载入 Parquet，循环单因子 IC 检验，筛选有效 alpha |
 | `plots/` | 图表输出目录（`analyze_main.py` 运行时自动创建），每个因子生成 `{factor}_ic.png` 和 `{factor}_backtest.png` |
@@ -380,9 +382,11 @@
 
   | 方法 | 说明 |
   |------|------|
-  | `__init__(factor_df, target_df, num_groups=5, rf=0.03, plots_dir=None)` | 接收单因子平表与 target，merge 并 dropna |
+  | `__init__(factor_df, target_df, num_groups=5, rf=0.03, forward_days=1, plots_dir=None)` | 接收单因子平表与 target，merge 并 dropna |
   | `run_backtest()` | 执行完整 5 步回测，返回绩效指标 DataFrame |
   | `plot(show=True)` | 绘制 G1..GN + L-S 累计净值折线图，保存至 `plots_dir` |
+
+  **`forward_days` 参数说明**：持仓天数，与 `calc_forward_return` 中的 `d` 保持一致（默认 1）。当 `forward_days > 1` 时，每行 `group_ret` 为 d 日累积收益；模块内部自动执行 `group_ret / forward_days`，将其近似为日收益后再复利，从而避免将 d 日收益当作 1 日收益连续复利导致的收益虚高。该近似基于滑动窗口的性质：`sum_T [R_d(T)/d] ≈ sum_t r_t`（大样本 N>>d 时误差可忽略）。精确的净收益回测请使用 `NetReturnBacktester`。
 
 - **5 步回测逻辑**：
 
@@ -408,7 +412,8 @@
   ```python
   from backtester import LayeredBacktester
 
-  bt   = LayeredBacktester(single_factor_df, target_df, plots_dir=pathlib.Path("plots"))
+  bt   = LayeredBacktester(single_factor_df, target_df, forward_days=5,
+                           plots_dir=pathlib.Path("plots"))
   perf = bt.run_backtest()   # DataFrame: rows=G1..G5+L-S, cols=Cum Return/Ann Return/...
   print(perf)
   bt.plot(show=True)         # 保存至 plots/{factor_col}_backtest.png
@@ -451,14 +456,58 @@
   )
   # 然后送入 LayeredBacktester
   from backtester import LayeredBacktester
-  bt = LayeredBacktester(synth_df, target_df, plots_dir=pathlib.Path("plots"))
+  bt = LayeredBacktester(synth_df, target_df, forward_days=5, plots_dir=pathlib.Path("plots"))
   print(bt.run_backtest())
   bt.plot()
   ```
 
 ---
 
-### 13. data/stock_data.db
+### 13. src/net_backtester.py
+
+- **用途**：纯多头、考虑摩擦成本的回测模块，模拟实盘中重叠投资组合（Overlapping Portfolio）策略的实际净收益表现，封装为 `NetReturnBacktester` 类。
+
+- **重叠组合逻辑**：
+  - 每天选出当日 top 20% 股票（等权 `daily_w`）
+  - 将资金分为 `d` 个 bucket，当日权重 = 过去 d 天 `daily_w` 的滚动均值（`overlap_w`）
+  - 毛收益：`GrossRet_T = overlap_w_{T-1} · R_T`
+  - 换手率：`Turnover_T = 0.5 × ||overlap_w_T - overlap_w_{T-1}||₁`
+  - 净收益：`NetRet_T = GrossRet_T - Turnover_T × cost_rate`
+  - 前 d 天滚动窗口不完整，自动裁剪
+
+- **类接口**：
+
+  | 方法 | 说明 |
+  |------|------|
+  | `__init__(alpha_df, prices_df, forward_days, cost_rate=0.0035, rf=0.03, plots_dir=None)` | 接收合成因子和价格表，延迟计算 |
+  | `run_backtest()` | 执行回测，返回 `pd.Series` 绩效指标 |
+  | `plot(show=False)` | 绘制累计净值曲线，保存至 `plots_dir` |
+
+- **7 个绩效指标**：
+
+  | 指标 | 公式 |
+  |------|------|
+  | Cum Return | `(1+net_ret).cumprod().iloc[-1] - 1` |
+  | Ann Return | `(1+cum_ret)^(252/N) - 1` |
+  | Ann Vol | `net_ret.std() × √252` |
+  | Sharpe | `(ann_ret - rf) / ann_vol` |
+  | Max DD | `min(cumval / cumval.cummax() - 1)` |
+  | Avg Daily Turnover | `mean(Turnover_T)` |
+  | Breakeven Turnover | `(ann_gross_ret - rf) / (cost_rate × 252)`，即在当前毛收益下可承受的最大日换手率 |
+
+- **使用示例**：
+  ```python
+  from net_backtester import NetReturnBacktester
+
+  nb = NetReturnBacktester(synth_df, prices_df, forward_days=1,
+                           cost_rate=0.0035, plots_dir=pathlib.Path("plots"))
+  print(nb.run_backtest())  # pd.Series: Ann Return, Sharpe, Breakeven Turnover ...
+  nb.plot()                 # 保存至 plots/synthetic_factor_net.png
+  ```
+
+---
+
+### 14. data/stock_data.db
 
 - **用途**：本地 SQLite 数据库，存储**四张表**：`daily_price`（含 amount）、`daily_basic`、`stock_info`、`adj_factor`。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。

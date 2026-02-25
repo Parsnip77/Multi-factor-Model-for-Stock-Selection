@@ -13,9 +13,19 @@ Workflow
 
 Public API
 ----------
-    bt = LayeredBacktester(factor_df, target_df, num_groups=5, rf=0.03, plots_dir=None)
+    bt = LayeredBacktester(factor_df, target_df, num_groups=5, rf=0.03,
+                           forward_days=1, plots_dir=None)
     perf_table = bt.run_backtest()   # pd.DataFrame: rows=groups+LS, cols=metrics
     fig        = bt.plot(show=True)  # cumulative NAV chart, saved to plots_dir
+
+Notes
+-----
+When forward_days > 1, each row of group_ret is a d-day return.  To avoid
+compounding these overlapping returns as if they were daily, the module divides
+group_ret by forward_days before computing cumulative NAV and performance
+metrics.  This approximation is accurate for large N (N >> d) because each
+underlying daily return appears in exactly d consecutive d-day windows, so
+sum_T [R_d(T) / d] ≈ sum_t r_t.
 """
 
 from __future__ import annotations
@@ -47,6 +57,10 @@ class LayeredBacktester:
         Number of quantile groups (default 5 → G1 .. G5).
     rf : float
         Annual risk-free rate used for Sharpe ratio (default 0.03).
+    forward_days : int
+        Holding period in trading days used to compute forward returns (default 1).
+        When > 1, group returns are divided by forward_days before compounding
+        to approximate daily returns (R_d / d ≈ r_daily for large N).
     plots_dir : path-like, optional
         Directory where the backtest chart is saved.  If None, no file is written.
     """
@@ -59,6 +73,7 @@ class LayeredBacktester:
         target_df: pd.DataFrame,
         num_groups: int = 5,
         rf: float = 0.03,
+        forward_days: int = 1,
         plots_dir: Optional[pathlib.Path | str] = None,
     ) -> None:
         # Identify factor column
@@ -71,6 +86,7 @@ class LayeredBacktester:
         self.factor_col = factor_cols[0]
         self.num_groups = num_groups
         self.rf = rf
+        self.forward_days = max(1, int(forward_days))
         self.plots_dir = pathlib.Path(plots_dir) if plots_dir is not None else None
         self.labels = [f"G{i}" for i in range(1, num_groups + 1)]
 
@@ -166,6 +182,8 @@ class LayeredBacktester:
             Numeric values are rounded to 4 decimal places for readability.
         """
         group_ret = self._bin_and_group_returns()
+        if self.forward_days > 1:
+            group_ret = group_ret / self.forward_days   # approx daily return: R_d/d
 
         # Long-short spread: top group minus bottom group
         ls = group_ret[self.labels[-1]] - group_ret[self.labels[0]]
@@ -197,6 +215,8 @@ class LayeredBacktester:
         matplotlib.figure.Figure
         """
         group_ret = self._bin_and_group_returns()
+        if self.forward_days > 1:
+            group_ret = group_ret / self.forward_days   # approx daily return: R_d/d
 
         ls = group_ret[self.labels[-1]] - group_ret[self.labels[0]]
         ls.name = "L-S"
