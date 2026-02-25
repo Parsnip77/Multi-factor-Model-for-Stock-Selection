@@ -259,7 +259,7 @@ class NetReturnBacktester:
                 f"Avg TO  : {self._summary['Avg Daily Turnover']:.4f}"
             )
             ax.text(
-                0.02, 0.05, txt,
+                0.88, 0.05, txt,
                 transform=ax.transAxes,
                 fontsize=8,
                 verticalalignment="bottom",
