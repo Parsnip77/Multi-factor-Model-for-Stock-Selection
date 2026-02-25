@@ -4,11 +4,31 @@ Alpha101: selected alpha factors from '101 Formulaic Alphas' (Kakushadze, 2015).
 Reference: https://arxiv.org/abs/1601.00991
 Formulas are taken verbatim from Appendix A of the paper.
 
-Implemented alphas (5):
+Implemented alphas:
+    Alpha#1  : (rank(Ts_ArgMax(SignedPower(((returns<0)?stddev(returns,20):close),2.),5)) - 0.5)
+    Alpha#3  : (-1 * correlation(rank(open), rank(volume), 10))
     Alpha#6  : (-1 * correlation(open, volume, 10))
     Alpha#12 : (sign(delta(volume, 1)) * (-1 * delta(close, 1)))
+    Alpha#21 : ((((sum(close,8)/8) + stddev(close,8)) < (sum(close,2)/2)) ? -1 :
+               (((sum(close,2)/2) < ((sum(close,8)/8) - stddev(close,8))) ? 1 :
+               (((1 < (volume/adv20)) || ((volume/adv20) == 1)) ? 1 : -1)))
     Alpha#38 : ((-1 * rank(Ts_Rank(close, 10))) * rank((close / open)))
+    Alpha#40 : ((-1 * rank(stddev(high, 10))) * correlation(high, volume, 10))
     Alpha#41 : (((high * low)^0.5) - vwap)
+    Alpha#42 : (rank((vwap - close)) / rank((vwap + close)))
+    Alpha#54 : ((-1 * ((low - close) * (open^5))) / ((low - high) * (close^5)))
+    Alpha#72 : (rank(decay_linear(correlation(((high+low)/2), adv40, 8.93345), 10.1519)) /
+               rank(decay_linear(correlation(Ts_Rank(vwap,3.72469),
+                                             Ts_Rank(volume,18.5188), 6.86671), 2.95011)))
+    Alpha#88 : min(rank(decay_linear(((rank(open)+rank(low))-(rank(high)+rank(close))),8.06882)),
+               Ts_Rank(decay_linear(correlation(Ts_Rank(close,8.44728),
+                                                Ts_Rank(adv60,20.6966),8.01266),6.65053),2.61957))
+    Alpha#94 : ((rank(vwap - ts_min(vwap,11.5783)) ^
+               Ts_Rank(correlation(Ts_Rank(vwap,19.6462),
+                                   Ts_Rank(adv60,4.02992), 18.0926), 2.70756)) * -1)
+    Alpha#98 : (rank(decay_linear(correlation(vwap,sum(adv5,26.4719),4.58418),7.18088)) -
+               rank(decay_linear(Ts_Rank(Ts_ArgMin(correlation(rank(open),
+                                                   rank(adv15),20.8187),8.62571),6.95668),8.07206)))
     Alpha#101: ((close - open) / ((high - low) + .001))
     Alpha_5_day_reversal: (close - delay(close,5)) / delay(close,5)
 
@@ -31,6 +51,7 @@ Raw factor values (including NaN and inf) are preserved; downstream cleaning
 is handled by a separate processing layer (to be implemented).
 """
 
+from this import d
 import numpy as np
 import pandas as pd
 
@@ -247,6 +268,31 @@ class Alpha101:
     # Alpha implementations
     # ------------------------------------------------------------------
 
+    def alpha001(self) -> pd.DataFrame:
+        """
+        Alpha#1: (rank(Ts_ArgMax(SignedPower(((returns < 0) ? stddev(returns, 20) : close), 2.), 5)) - 0.5)
+
+        For each stock: if today's return is negative, substitute stddev(returns, 20) for
+        close; otherwise keep close. Apply SignedPower(x, 2) to the result, then find
+        which of the past 5 days had the maximum value (Ts_ArgMax). Cross-sectionally
+        rank that position index and subtract 0.5 to centre around zero.
+        """
+        std20 = self._stddev(self.returns, 20)
+        inner = np.where(self.returns < 0, std20, self.close)
+        inner = pd.DataFrame(inner, index=self.close.index, columns=self.close.columns)
+        sp = self._signed_power(inner, 2.0)
+        return self._rank(self._ts_argmax(sp, 5)) - 0.5
+
+    def alpha003(self) -> pd.DataFrame:
+        """
+        Alpha#3: (-1 * correlation(rank(open), rank(volume), 10))
+
+        Negative rolling correlation between cross-sectional ranks of open price and
+        volume over a 10-day window. Penalises stocks whose open rank and volume rank
+        move together (momentum-and-volume agreement is faded).
+        """
+        return -1 * self._corr(self._rank(self.open), self._rank(self.vol), 10)
+
     def alpha006(self) -> pd.DataFrame:
         """
         Alpha#6: (-1 * correlation(open, volume, 10))
@@ -267,6 +313,31 @@ class Alpha101:
         """
         return self._sign(self._delta(self.vol, 1)) * (-1 * self._delta(self.close, 1))
 
+    def alpha021(self) -> pd.DataFrame:
+        """
+        Alpha#21: ((((sum(close,8)/8) + stddev(close,8)) < (sum(close,2)/2)) ? (-1*1) :
+                   (((sum(close,2)/2) < ((sum(close,8)/8) - stddev(close,8))) ? 1 :
+                   (((1 < (volume/adv20)) || ((volume/adv20) == 1)) ? 1 : (-1*1))))
+
+        Three-level conditional: compare recent 2-day average close against an
+        8-day band (mean ± stddev). If the short-term average is above the upper
+        band → bearish (-1); below the lower band → bullish (+1); otherwise
+        fall back to whether today's volume is at least as large as the 20-day
+        average volume (≥1) → +1, else -1.
+        """
+        adv20 = self.vol.rolling(20).mean()
+        sum8 = self._sum(self.close, 8) / 8
+        sum2 = self._sum(self.close, 2) / 2
+        std8 = self._stddev(self.close, 8)
+        vol_ratio = self.vol / adv20
+
+        cond1 = (sum8 + std8) < sum2           # short-term avg > upper band → -1
+        cond2 = sum2 < (sum8 - std8)            # short-term avg < lower band → +1
+        cond3 = vol_ratio >= 1                  # (1 < vol/adv20) || (vol/adv20 == 1)
+
+        result = np.where(cond1, -1, np.where(cond2, 1, np.where(cond3, 1, -1)))
+        return pd.DataFrame(result, index=self.close.index, columns=self.close.columns)
+
     def alpha038(self) -> pd.DataFrame:
         """
         Alpha#38: ((-1 * rank(Ts_Rank(close, 10))) * rank((close / open)))
@@ -276,6 +347,16 @@ class Alpha101:
         """
         ts_rnk = self._ts_rank(self.close, 10)
         return (-1 * self._rank(ts_rnk)) * self._rank(self.close / self.open)
+
+    def alpha040(self) -> pd.DataFrame:
+        """
+        Alpha#40: ((-1 * rank(stddev(high, 10))) * correlation(high, volume, 10))
+
+        Stocks with high volatility in the high price (large stddev rank) are shorted
+        when high price and volume are positively correlated over the past 10 days.
+        Combines dispersion penalty with momentum-volume agreement.
+        """
+        return (-1 * self._rank(self._stddev(self.high, 10))) * self._corr(self.high, self.vol, 10)
 
     def alpha041(self) -> pd.DataFrame:
         """
@@ -287,6 +368,138 @@ class Alpha101:
         Uses precise vwap = amount * 10 / vol when available.
         """
         return np.power(self.high * self.low, 0.5) - self.vwap
+
+    def alpha042(self) -> pd.DataFrame:
+        """
+        Alpha#42: (rank((vwap - close)) / rank((vwap + close)))
+
+        Ratio of the cross-sectional rank of (vwap - close) to the rank of (vwap + close).
+        Positive when close < vwap (stock slid below the day's average price); acts as a
+        delay-0 mean-reversion signal — stocks that underperformed their vwap are favoured.
+        """
+        return self._rank(self.vwap - self.close) / self._rank(self.vwap + self.close)
+
+    def alpha054(self) -> pd.DataFrame:
+        """
+        Alpha#54: ((-1 * ((low - close) * (open^5))) / ((low - high) * (close^5)))
+
+        ^ denotes signedpower: sign(x)*|x|^e. For positive prices this reduces to
+        the ordinary power. Denominator (low - high) <= 0; division by zero yields
+        NaN naturally and is left for downstream cleaning.
+        """
+        num = -1 * (self.low - self.close) * self._signed_power(self.open, 5)
+        den = (self.low - self.high) * self._signed_power(self.close, 5)
+        return num / den
+
+    def alpha072(self) -> pd.DataFrame:
+        """
+        Alpha#72: (rank(decay_linear(correlation((high+low)/2, adv40, 8.93345), 10.1519)) /
+                   rank(decay_linear(correlation(Ts_Rank(vwap,3.72469),
+                                                 Ts_Rank(volume,18.5188), 6.86671), 2.95011)))
+
+        Non-integer window parameters are floored per the paper convention:
+          correlation window 8.93345 → 8, decay_linear 10.1519 → 10
+          Ts_Rank vwap 3.72469 → 3, Ts_Rank vol 18.5188 → 18
+          correlation window 6.86671 → 6, decay_linear 2.95011 → 2
+        adv40 approximated as 40-day rolling mean of share volume.
+        """
+        adv40 = self.vol.rolling(40).mean()
+        mid = (self.high + self.low) / 2
+        num = self._rank(self._decay_linear(self._corr(mid, adv40, 8), 10))
+        ts_rank_vwap = self._ts_rank(self.vwap, 3)
+        ts_rank_vol = self._ts_rank(self.vol, 18)
+        den = self._rank(self._decay_linear(self._corr(ts_rank_vwap, ts_rank_vol, 6), 2))
+        return num / den
+
+    def alpha088(self) -> pd.DataFrame:
+        """
+        Alpha#88: min(rank(decay_linear(((rank(open)+rank(low))-(rank(high)+rank(close))), 8.06882)),
+                      Ts_Rank(decay_linear(correlation(Ts_Rank(close,8.44728),
+                                                       Ts_Rank(adv60,20.6966),8.01266),6.65053),2.61957))
+
+        Element-wise minimum of two signals:
+          (1) rank of decay-linear-smoothed difference between open/low ranks and high/close ranks
+          (2) ts_rank of decay-linear-smoothed rolling correlation between time-series ranks of
+              close and adv60
+        Non-integer window parameters are floored per paper convention:
+          decay_linear 8.06882→8, Ts_Rank close 8.44728→8, Ts_Rank adv60 20.6966→20,
+          corr 8.01266→8, decay_linear 6.65053→6, outer Ts_Rank 2.61957→2
+        adv60 approximated as 60-day rolling mean of share volume.
+        """
+        adv60 = self.vol.rolling(60).mean()
+        signal1 = self._rank(
+            self._decay_linear(
+                (self._rank(self.open) + self._rank(self.low))
+                - (self._rank(self.high) + self._rank(self.close)),
+                8,
+            )
+        )
+        signal2 = self._ts_rank(
+            self._decay_linear(
+                self._corr(self._ts_rank(self.close, 8), self._ts_rank(adv60, 20), 8),
+                6,
+            ),
+            2,
+        )
+        return np.minimum(signal1, signal2)
+
+    def alpha094(self) -> pd.DataFrame:
+        """
+        Alpha#94: ((rank(vwap - ts_min(vwap, 11.5783)) ^
+                    Ts_Rank(correlation(Ts_Rank(vwap,19.6462),
+                                        Ts_Rank(adv60,4.02992), 18.0926), 2.70756)) * -1)
+
+        ^ denotes signedpower(base, exp).
+        Non-integer window parameters are floored per the paper convention:
+          ts_min 11.5783 → 11, Ts_Rank vwap 19.6462 → 19
+          Ts_Rank adv60 4.02992 → 4, correlation 18.0926 → 18, outer Ts_Rank 2.70756 → 2
+        adv60 approximated as 60-day rolling mean of share volume.
+        """
+        adv60 = self.vol.rolling(60).mean()
+        ts_rank_vwap = self._ts_rank(self.vwap, 19)
+        ts_rank_adv60 = self._ts_rank(adv60, 4)
+        base = self._rank(self.vwap - self._ts_min(self.vwap, 11))
+        exp = self._ts_rank(self._corr(ts_rank_vwap, ts_rank_adv60, 18), 2)
+        return self._signed_power(base, exp) * -1
+
+    def alpha098(self) -> pd.DataFrame:
+        """
+        Alpha#98: (rank(decay_linear(correlation(vwap, sum(adv5,26.4719), 4.58418), 7.18088)) -
+                   rank(decay_linear(Ts_Rank(Ts_ArgMin(correlation(rank(open),
+                                                                    rank(adv15),20.8187),8.62571),
+                                             6.95668), 8.07206)))
+
+        Difference of two ranked decay-linear signals:
+          (1) rank of decay-smooth correlation between vwap and 26-day sum of adv5
+          (2) rank of decay-smooth ts_rank of ts_argmin of correlation between
+              open-rank and adv15-rank
+        Non-integer window parameters are floored per paper convention:
+          sum adv5 26.4719→26, corr 4.58418→4, decay_linear 7.18088→7,
+          corr(open,adv15) 20.8187→20, Ts_ArgMin 8.62571→8, Ts_Rank 6.95668→6,
+          decay_linear 8.07206→8
+        adv5/adv15 approximated as 5/15-day rolling mean of share volume.
+        """
+        adv5  = self.vol.rolling(5).mean()
+        adv15 = self.vol.rolling(15).mean()
+        signal1 = self._rank(
+            self._decay_linear(
+                self._corr(self.vwap, self._sum(adv5, 26), 4),
+                7,
+            )
+        )
+        signal2 = self._rank(
+            self._decay_linear(
+                self._ts_rank(
+                    self._ts_argmin(
+                        self._corr(self._rank(self.open), self._rank(adv15), 20),
+                        8,
+                    ),
+                    6,
+                ),
+                8,
+            )
+        )
+        return signal1 - signal2
 
     def alpha101(self) -> pd.DataFrame:
         """

@@ -50,7 +50,7 @@
 | `data/` | 存放 SQLite 数据库文件（不上传至 git） |
 | `src/config.py` | 全局参数配置，包含 Tushare Token（不上传至 git） |
 | `src/data_loader.py` | `DataEngine` 类：数据下载、缓存、读取 |
-| `src/alphas.py` | `Alpha101` 类：复现《101 Formulaic Alphas》中的 5 个因子 |
+| `src/alphas.py` | `Alpha101` 类：复现《101 Formulaic Alphas》中的 15 个因子 |
 | `src/preprocessor.py` | `FactorCleaner` 类：对原始因子执行去极值、标准化、中性化 |
 | `src/targets.py` | `calc_forward_return(prices_df, d)`：计算 d 日未来收益率标签 |
 | `src/ic_analyzer.py` | `calc_ic` / `calc_ic_metrics` / `plot_ic`：截面 Spearman IC 评估 |
@@ -145,10 +145,20 @@
 
   | 因子 | 公式 | 说明 |
   |------|------|------|
+  | `alpha001` | `rank(ts_argmax(signedpower((ret<0)?stddev(ret,20):close, 2), 5)) - 0.5` | 负收益时用波动率替代收盘价，对5日最高值的时序位置排名 |
+  | `alpha003` | `-1 * correlation(rank(open), rank(volume), 10)` | 开盘价排名与成交量排名的滚动相关性取反 |
   | `alpha006` | `-1 * correlation(open, volume, 10)` | 开盘价与成交量的滚动相关性取反 |
   | `alpha012` | `sign(delta(volume, 1)) * (-1 * delta(close, 1))` | 成交量方向乘以收盘价变动反向 |
+  | `alpha021` | 三层条件：8日均值±stddev 带宽 vs 2日均值，辅以量比判断 | 均值回归带宽条件因子，结果为 ±1 |
   | `alpha038` | `(-1 * rank(ts_rank(close, 10))) * rank(close/open)` | 近期高位且高涨幅的股票做空 |
+  | `alpha040` | `(-1 * rank(stddev(high, 10))) * correlation(high, volume, 10)` | 高价波动率乘以高价-成交量相关性 |
   | `alpha041` | `sqrt(high * low) - vwap` | 高低价几何均值与成交均价之差（精确 vwap） |
+  | `alpha042` | `rank(vwap - close) / rank(vwap + close)` | 收盘价相对 vwap 的位置比率（delay-0 均值回归） |
+  | `alpha054` | `(-1 * (low-close) * open^5) / ((low-high) * close^5)` | 基于开/收/高/低价五次幂的日内动量 |
+  | `alpha072` | `rank(decay_linear(corr((H+L)/2, adv40, 8), 10)) / rank(decay_linear(corr(ts_rank(vwap,3), ts_rank(vol,18), 6), 2))` | 中价-量相关性与 vwap-量 ts_rank 相关性之比 |
+  | `alpha088` | `min(rank(decay_linear((rank(O)+rank(L))-(rank(H)+rank(C)),8)), ts_rank(decay_linear(corr(ts_rank(C,8),ts_rank(adv60,20),8),6),2))` | 价格结构排名差与成交量相关性的最小值 |
+  | `alpha094` | `signedpower(rank(vwap - ts_min(vwap,11)), ts_rank(corr(ts_rank(vwap,19), ts_rank(adv60,4), 18), 2)) * -1` | vwap 距历史低点的幂次排名因子 |
+  | `alpha098` | `rank(decay_linear(corr(vwap,sum(adv5,26),4),7)) - rank(decay_linear(ts_rank(ts_argmin(corr(rank(O),rank(adv15),20),8),6),8))` | vwap-量相关性与开盘价-量相关性低点时序排名之差 |
   | `alpha101` | `(close - open) / (high - low + 0.001)` | 日内动量：价格区间归一化的涨跌幅 |
   | `alpha_5_day_reversal` | `(close - delay(close, 5)) / delay(close, 5)` | 5日收盘价的反转因子 |
 
@@ -342,7 +352,7 @@
   | 1 | 载入 `prices.parquet` 与 `factors_clean.parquet` |
   | 2 | 调用 `calc_forward_return(prices_df, d=1)` 生成 target |
   | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，展示图表 |
-  | 4 | 筛选满足 `abs(IC mean) > 0.02` 且 `abs(ICIR) > 0.5` 的因子并输出列表 |
+  | 4 | 筛选满足 `abs(IC mean) > 0.02` 且 `abs(ICIR) > 0.3` 的因子并输出列表 |
 
 - **使用**：
   ```bash
@@ -356,7 +366,7 @@
   |------|--------|------|
   | `FORWARD_DAYS` | `1` | 未来收益率天数 |
   | `IC_MEAN_THRESHOLD` | `0.02` | IC 均值绝对值阈值 |
-  | `ICIR_THRESHOLD` | `0.50` | ICIR 绝对值阈值 |
+  | `ICIR_THRESHOLD` | `0.30` | ICIR 绝对值阈值 |
   | `SHOW_PLOTS` | `True` | 是否交互展示 IC 图表 |
 
 ---

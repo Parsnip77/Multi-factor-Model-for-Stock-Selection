@@ -3,6 +3,8 @@ prompt.md
 
 result.txt
 
+.cursor/
+
 # Tushare token is stored here; must never be committed
 src/config.py
 

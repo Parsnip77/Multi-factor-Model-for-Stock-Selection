@@ -31,7 +31,7 @@ DATA_DIR  = ROOT / "data"
 PLOTS_DIR = ROOT / "plots"
 FORWARD_DAYS = 1          # d-day forward return
 IC_MEAN_THRESHOLD = 0.02  # minimum |IC mean| to keep a factor
-ICIR_THRESHOLD = 0.50     # minimum |ICIR| to keep a factor
+ICIR_THRESHOLD = 0.30     # minimum |ICIR| to keep a factor
 SHOW_PLOTS = True         # set False to suppress interactive charts
 
 
