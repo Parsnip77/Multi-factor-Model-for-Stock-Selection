@@ -152,7 +152,6 @@
   | `alpha003` | `-1 * correlation(rank(open), rank(volume), 10)` | 开盘价排名与成交量排名的滚动相关性取反 |
   | `alpha006` | `-1 * correlation(open, volume, 10)` | 开盘价与成交量的滚动相关性取反 |
   | `alpha012` | `sign(delta(volume, 1)) * (-1 * delta(close, 1))` | 成交量方向乘以收盘价变动反向 |
-  | `alpha021` | 三层条件：8日均值±stddev 带宽 vs 2日均值，辅以量比判断 | 均值回归带宽条件因子，结果为 ±1 |
   | `alpha038` | `(-1 * rank(ts_rank(close, 10))) * rank(close/open)` | 近期高位且高涨幅的股票做空 |
   | `alpha040` | `(-1 * rank(stddev(high, 10))) * correlation(high, volume, 10)` | 高价波动率乘以高价-成交量相关性 |
   | `alpha041` | `sqrt(high * low) - vwap` | 高低价几何均值与成交均价之差（精确 vwap） |
@@ -451,7 +450,7 @@
 
   synth_df = rolling_linear_combine(
       factors_df, target_df,
-      factor_cols=["alpha021", "alpha042", "alpha054"],
+      factor_cols=["alpha042", "alpha054", "alpha038"],
       window=60,
   )
   # 然后送入 LayeredBacktester

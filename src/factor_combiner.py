@@ -17,7 +17,7 @@ Public API
 ----------
     synth_df = rolling_linear_combine(
         factors_df, target_df,
-        factor_cols=['alpha021', 'alpha042', 'alpha054'],
+        factor_cols=['alpha042', 'alpha054', 'alpha038'],
         window=60
     )
     # returns flat DataFrame: trade_date / ts_code / synthetic_factor

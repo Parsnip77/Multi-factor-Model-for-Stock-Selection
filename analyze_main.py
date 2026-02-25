@@ -32,8 +32,8 @@ from net_backtester import NetReturnBacktester
 DATA_DIR  = ROOT / "data"
 PLOTS_DIR = ROOT / "plots"
 FORWARD_DAYS = 5          # d-day forward return
-IC_MEAN_THRESHOLD = 0.02  # minimum |IC mean| to keep a factor
-ICIR_THRESHOLD = 0.30     # minimum |ICIR| to keep a factor
+IC_MEAN_THRESHOLD = 0.015  # minimum |IC mean| to keep a factor
+ICIR_THRESHOLD = 0.15     # minimum |ICIR| to keep a factor
 SHOW_PLOTS = False         # set False to suppress interactive charts
 COMBINE_WINDOW = 60       # rolling OLS training window (trading days)
 
@@ -103,6 +103,7 @@ def main() -> None:
     alpha_cols = [c for c in factors_df.columns if c not in ("trade_date", "ts_code")]
 
     effective_alphas: list[str] = []
+    effective_alphas_ic_mean: dict[str, float] = {}   # to detect reverse factors
 
     for alpha in alpha_cols:
         _sep()
@@ -137,9 +138,11 @@ def main() -> None:
         # 3.5 Selection criteria
         if abs(metrics["ic_mean"]) > IC_MEAN_THRESHOLD and abs(metrics["icir"]) > ICIR_THRESHOLD:
             effective_alphas.append(alpha)
-            print(f"  >>> SELECTED  (|IC mean| > {IC_MEAN_THRESHOLD:.0%}  &  |ICIR| > {ICIR_THRESHOLD})")
+            effective_alphas_ic_mean[alpha] = metrics["ic_mean"]
+            direction = "reverse" if metrics["ic_mean"] < 0 else "forward"
+            print(f"  >>> SELECTED  [{direction}]  (|IC mean| > {IC_MEAN_THRESHOLD:.1%}  &  |ICIR| > {ICIR_THRESHOLD})")
         else:
-            print(f"      not selected  (threshold: |IC mean| > {IC_MEAN_THRESHOLD:.0%}  &  |ICIR| > {ICIR_THRESHOLD})")
+            print(f"      not selected  (threshold: |IC mean| > {IC_MEAN_THRESHOLD:.1%}  &  |ICIR| > {ICIR_THRESHOLD})")
 
     # ------------------------------------------------------------------
     # Step 4: Report effective alphas
@@ -152,7 +155,7 @@ def main() -> None:
             print(f"      * {name}")
     else:
         _info("No alpha passed the selection criteria.")
-        _info(f"  Criteria: |IC mean| > {IC_MEAN_THRESHOLD:.0%}  AND  |ICIR| > {ICIR_THRESHOLD}")
+        _info(f"  Criteria: |IC mean| > {IC_MEAN_THRESHOLD:.1%}  AND  |ICIR| > {ICIR_THRESHOLD}")
 
     # ------------------------------------------------------------------
     # Step 5: Synthetic factor via rolling OLS combination
@@ -164,10 +167,14 @@ def main() -> None:
     if len(effective_alphas) == 0:
         _info("Skipped: no effective alphas found.")
     elif len(effective_alphas) == 1:
-        _info(f"Only 1 effective alpha ({effective_alphas[0]}); skipping OLS combination.")
+        alpha_name = effective_alphas[0]
+        _info(f"Only 1 effective alpha ({alpha_name}); skipping OLS combination.")
         _info("Using single factor directly as synthetic factor for Step 6.")
-        single = factors_df[["trade_date", "ts_code", effective_alphas[0]]].copy()
-        single = single.rename(columns={effective_alphas[0]: "synthetic_factor"})
+        single = factors_df[["trade_date", "ts_code", alpha_name]].copy()
+        if effective_alphas_ic_mean[alpha_name] < 0:
+            _info(f"  Reverse factor (IC mean < 0): negating values so high score = high expected return.")
+            single[alpha_name] = -single[alpha_name]
+        single = single.rename(columns={alpha_name: "synthetic_factor"})
         synth_df = single
     else:
         _info(f"Combining {len(effective_alphas)} factors: {effective_alphas}")

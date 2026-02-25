@@ -313,30 +313,26 @@ class Alpha101:
         """
         return self._sign(self._delta(self.vol, 1)) * (-1 * self._delta(self.close, 1))
 
-    def alpha021(self) -> pd.DataFrame:
-        """
-        Alpha#21: ((((sum(close,8)/8) + stddev(close,8)) < (sum(close,2)/2)) ? (-1*1) :
-                   (((sum(close,2)/2) < ((sum(close,8)/8) - stddev(close,8))) ? 1 :
-                   (((1 < (volume/adv20)) || ((volume/adv20) == 1)) ? 1 : (-1*1))))
-
-        Three-level conditional: compare recent 2-day average close against an
-        8-day band (mean ± stddev). If the short-term average is above the upper
-        band → bearish (-1); below the lower band → bullish (+1); otherwise
-        fall back to whether today's volume is at least as large as the 20-day
-        average volume (≥1) → +1, else -1.
-        """
-        adv20 = self.vol.rolling(20).mean()
-        sum8 = self._sum(self.close, 8) / 8
-        sum2 = self._sum(self.close, 2) / 2
-        std8 = self._stddev(self.close, 8)
-        vol_ratio = self.vol / adv20
-
-        cond1 = (sum8 + std8) < sum2           # short-term avg > upper band → -1
-        cond2 = sum2 < (sum8 - std8)            # short-term avg < lower band → +1
-        cond3 = vol_ratio >= 1                  # (1 < vol/adv20) || (vol/adv20 == 1)
-
-        result = np.where(cond1, -1, np.where(cond2, 1, np.where(cond3, 1, -1)))
-        return pd.DataFrame(result, index=self.close.index, columns=self.close.columns)
+    # alpha021 outputs only ±1 signals, which is incompatible with the layered
+    # backtest framework (cross-sectional ranking requires continuous values).
+    # Disabled to avoid spurious IC / backtest results.
+    #
+    # def alpha021(self) -> pd.DataFrame:
+    #     """
+    #     Alpha#21: ((((sum(close,8)/8) + stddev(close,8)) < (sum(close,2)/2)) ? (-1*1) :
+    #                (((sum(close,2)/2) < ((sum(close,8)/8) - stddev(close,8))) ? 1 :
+    #                (((1 < (volume/adv20)) || ((volume/adv20) == 1)) ? 1 : (-1*1))))
+    #     """
+    #     adv20 = self.vol.rolling(20).mean()
+    #     sum8 = self._sum(self.close, 8) / 8
+    #     sum2 = self._sum(self.close, 2) / 2
+    #     std8 = self._stddev(self.close, 8)
+    #     vol_ratio = self.vol / adv20
+    #     cond1 = (sum8 + std8) < sum2
+    #     cond2 = sum2 < (sum8 - std8)
+    #     cond3 = vol_ratio >= 1
+    #     result = np.where(cond1, -1, np.where(cond2, 1, np.where(cond3, 1, -1)))
+    #     return pd.DataFrame(result, index=self.close.index, columns=self.close.columns)
 
     def alpha038(self) -> pd.DataFrame:
         """
