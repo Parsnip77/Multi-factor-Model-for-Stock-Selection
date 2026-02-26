@@ -431,7 +431,7 @@
 
 - **用途**：将多个有效 alpha 因子通过滚动 OLS 回归线性合成为一个综合因子（Synthetic Factor），供 `LayeredBacktester` 进行回测。
 
-- **核心函数**：`rolling_linear_combine(factors_df, target_df, factor_cols, window=60)`
+- **核心函数**：`rolling_linear_combine(factors_df, target_df, factor_cols, window=3)`
 
 - **逻辑流程**：
 
@@ -447,7 +447,7 @@
   - `factors_df`：平表，含 `trade_date` / `ts_code` / 若干 alpha 列
   - `target_df`：forward_return 标签（MultiIndex 或平表均可）
   - `factor_cols`：参与合成的 alpha 列名列表（至少 1 个）
-  - `window`：滚动训练窗口天数（默认 60）
+  - `window`：滚动训练窗口天数（默认 3）
 
 - **输出**：平表 DataFrame，列 `[trade_date, ts_code, synthetic_factor]`，z-score 标准化完毕，头尾空白已裁剪
 
@@ -458,7 +458,7 @@
   synth_df = rolling_linear_combine(
       factors_df, target_df,
       factor_cols=["alpha042", "alpha054", "alpha038"],
-      window=60,
+      window=3,
   )
   # 然后送入 LayeredBacktester
   from backtester import LayeredBacktester
@@ -660,7 +660,7 @@ EOF
 python data_preparation_main.py
 
 # 5. 运行第二阶段总脚本（因子 IC 评估 + 有效因子筛选）
-python analyze_main.py > result.txt
+python analyze_main.py
 
 # 6. 运行第三阶段总脚本（LightGBM 合成因子 + 双回测 + 报告）
 python ml_analyze_main.py

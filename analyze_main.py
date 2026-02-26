@@ -12,6 +12,7 @@ Usage
 import sys
 import pathlib
 import warnings
+from io import StringIO
 
 import pandas as pd
 
@@ -35,28 +36,42 @@ FORWARD_DAYS = 5          # d-day forward return
 IC_MEAN_THRESHOLD = 0.015  # minimum |IC mean| to keep a factor
 ICIR_THRESHOLD = 0.15     # minimum |ICIR| to keep a factor
 SHOW_PLOTS = False         # set False to suppress interactive charts
-COMBINE_WINDOW = 60       # rolling OLS training window (trading days)
+COMBINE_WINDOW = 3       # rolling OLS training window (trading days)
+
+
+# -----------------------------------------------------------------------
+# Report buffer – accumulates all output for result.txt
+# -----------------------------------------------------------------------
+_buf = StringIO()
+
+RESULT_FILE = ROOT / "result.txt"
 
 
 # -----------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------
+def _p(msg: str = "") -> None:
+    """Print to stdout and append to the report buffer."""
+    print(msg)
+    _buf.write(msg + "\n")
+
+
 def _sep(char: str = "-", width: int = 62) -> None:
-    print(char * width)
+    _p(char * width)
 
 
 def _step(msg: str) -> None:
-    print(f"\n{'=' * 62}")
-    print(f"  {msg}")
-    print(f"{'=' * 62}")
+    _p(f"\n{'=' * 62}")
+    _p(f"  {msg}")
+    _p(f"{'=' * 62}")
 
 
 def _ok(msg: str) -> None:
-    print(f"  [OK]  {msg}")
+    _p(f"  [OK]  {msg}")
 
 
 def _info(msg: str) -> None:
-    print(f"  [  ]  {msg}")
+    _p(f"  [  ]  {msg}")
 
 
 # -----------------------------------------------------------------------
@@ -73,8 +88,8 @@ def main() -> None:
 
     for p in (prices_path, factors_path):
         if not p.exists():
-            print(f"\n  [ERROR] File not found: {p}")
-            print("  Please run `python data_preparation_main.py` first.\n")
+            _p(f"\n  [ERROR] File not found: {p}")
+            _p("  Please run `python data_preparation_main.py` first.\n")
             sys.exit(1)
 
     prices_df  = pd.read_parquet(prices_path)
@@ -107,7 +122,7 @@ def main() -> None:
 
     for alpha in alpha_cols:
         _sep()
-        print(f"  Factor: {alpha}")
+        _p(f"  Factor: {alpha}")
         _sep()
 
         single_factor = factors_df[["trade_date", "ts_code", alpha]].copy()
@@ -130,8 +145,7 @@ def main() -> None:
         bt = LayeredBacktester(single_factor, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
         perf = bt.run_backtest()
         _info("  Backtest metrics:")
-        print(perf.to_string())
-        bt_save = PLOTS_DIR / f"{alpha}_backtest.png"
+        _p(perf.to_string())
         bt.plot(show=SHOW_PLOTS)
         _info(f"  Backtest plot saved.")
 
@@ -140,9 +154,9 @@ def main() -> None:
             effective_alphas.append(alpha)
             effective_alphas_ic_mean[alpha] = metrics["ic_mean"]
             direction = "reverse" if metrics["ic_mean"] < 0 else "forward"
-            print(f"  >>> SELECTED  [{direction}]  (|IC mean| > {IC_MEAN_THRESHOLD:.1%}  &  |ICIR| > {ICIR_THRESHOLD})")
+            _p(f"  >>> SELECTED  [{direction}]  (|IC mean| > {IC_MEAN_THRESHOLD:.1%}  &  |ICIR| > {ICIR_THRESHOLD})")
         else:
-            print(f"      not selected  (threshold: |IC mean| > {IC_MEAN_THRESHOLD:.1%}  &  |ICIR| > {ICIR_THRESHOLD})")
+            _p(f"      not selected  (threshold: |IC mean| > {IC_MEAN_THRESHOLD:.1%}  &  |ICIR| > {ICIR_THRESHOLD})")
 
     # ------------------------------------------------------------------
     # Step 4: Report effective alphas
@@ -152,7 +166,7 @@ def main() -> None:
     if effective_alphas:
         _ok(f"Effective alphas ({len(effective_alphas)} / {len(alpha_cols)}):")
         for name in effective_alphas:
-            print(f"      * {name}")
+            _p(f"      * {name}")
     else:
         _info("No alpha passed the selection criteria.")
         _info(f"  Criteria: |IC mean| > {IC_MEAN_THRESHOLD:.1%}  AND  |ICIR| > {ICIR_THRESHOLD}")
@@ -180,9 +194,20 @@ def main() -> None:
         _info(f"Combining {len(effective_alphas)} factors: {effective_alphas}")
         _info(f"Rolling window = {COMBINE_WINDOW} trading days")
 
+        # Use cross-sectional percentile rank of forward_return as the OLS
+        # regression target.  This removes the market-wide daily move (beta)
+        # from the label, so the model learns relative stock selection ability
+        # rather than fitting to the overall market direction.
+        target_flat = target_df.reset_index()[["trade_date", "ts_code", "forward_return"]]
+        target_cs_rank = target_flat.copy()
+        target_cs_rank["forward_return"] = target_cs_rank.groupby("trade_date")[
+            "forward_return"
+        ].rank(pct=True)
+        _info("  OLS target: cross-sectional pct-rank of forward_return (per trade_date)")
+
         synth_df = rolling_linear_combine(
             factors_df,
-            target_df,
+            target_cs_rank,
             factor_cols=effective_alphas,
             window=COMBINE_WINDOW,
         )
@@ -192,7 +217,7 @@ def main() -> None:
         bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
         perf_synth = bt_synth.run_backtest()
         _info("  Backtest metrics (synthetic factor):")
-        print(perf_synth.to_string())
+        _p(perf_synth.to_string())
         bt_synth.plot(show=SHOW_PLOTS)
         _info("  Synthetic backtest plot saved.")
     '''
@@ -230,7 +255,7 @@ def main() -> None:
         bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
         perf_synth = bt_synth.run_backtest()
         _info("  Backtest metrics (synthetic factor):")
-        print(perf_synth.to_string())
+        _p(perf_synth.to_string())
         bt_synth.plot(show=SHOW_PLOTS)
         _info("  Synthetic backtest plot saved.")
 
@@ -254,13 +279,19 @@ def main() -> None:
         )
         net_summary = nb.run_backtest()
         _info("  Net-return performance summary:")
-        print(net_summary.to_string())
+        _p(net_summary.to_string())
         nb.plot(show=SHOW_PLOTS)
         _info("  Net-return chart saved.")
 
-    print(f"\n{'=' * 62}")
-    print("  Phase 2 factor analysis complete.")
-    print(f"{'=' * 62}\n")
+    _p(f"\n{'=' * 62}")
+    _p("  Phase 2 factor analysis complete.")
+    _p(f"{'=' * 62}\n")
+
+    # ------------------------------------------------------------------
+    # Write report buffer to result.txt
+    # ------------------------------------------------------------------
+    RESULT_FILE.write_text(_buf.getvalue(), encoding="utf-8")
+    print(f"  Report saved to: {RESULT_FILE}")
 
 
 if __name__ == "__main__":
