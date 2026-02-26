@@ -361,7 +361,7 @@
   | 1 | 载入 `prices.parquet` 与 `factors_clean.parquet` |
   | 2 | 调用 `calc_forward_return(prices_df, d=5)` 生成 target |
   | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，展示图表 |
-  | 4 | 筛选满足 `abs(IC mean) > 0.015` 且 `abs(ICIR) > 0.15` 的因子并输出列表 |
+  | 4 | 筛选满足 `abs(IC mean) > 0.01` 且 `abs(ICIR) > 0.15` 的因子并输出列表 |
 
 - **使用**：
   ```bash
@@ -374,7 +374,7 @@
   | 变量 | 默认值 | 说明 |
   |------|--------|------|
   | `FORWARD_DAYS` | `5` | 未来收益率天数 |
-  | `IC_MEAN_THRESHOLD` | `0.015` | IC 均值绝对值阈值 |
+  | `IC_MEAN_THRESHOLD` | `0.01` | IC 均值绝对值阈值 |
   | `ICIR_THRESHOLD` | `0.15` | ICIR 绝对值阈值 |
   | `SHOW_PLOTS` | `False` | 是否交互展示 IC 图表 |
 

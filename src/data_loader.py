@@ -131,17 +131,25 @@ class DataEngine:
     # ------------------------------------------------------------------
 
     def _get_constituents(self) -> List[str]:
-        """Return list of ts_codes for the configured universe index."""
-        end = datetime.now()
-        start = end - timedelta(days=31)
+        """Return the index constituents as of the backtest start date.
+
+        Queries a 31-day window anchored at config.START_DATE so that the
+        universe reflects the index composition at the *beginning* of the
+        study period.  Using today's constituents would introduce look-ahead
+        bias because the CSI 300 continuously replaces weaker stocks with
+        stronger ones, leaking future information into the stock universe.
+        """
+        start_dt = datetime.strptime(config.START_DATE, "%Y%m%d")
+        end_dt = start_dt + timedelta(days=31)
         df = self.pro.index_weight(
             index_code=config.UNIVERSE_INDEX,
-            start_date=start.strftime("%Y%m%d"),
-            end_date=end.strftime("%Y%m%d"),
+            start_date=start_dt.strftime("%Y%m%d"),
+            end_date=end_dt.strftime("%Y%m%d"),
         )
         if df is None or df.empty:
             raise RuntimeError(
-                f"No constituents returned for index '{config.UNIVERSE_INDEX}'. "
+                f"No constituents returned for index '{config.UNIVERSE_INDEX}' "
+                f"around start date {config.START_DATE}. "
                 "Check Tushare permissions (index_weight requires ~2000 points) "
                 "or try '399300.SZ' instead of '000300.SH' in config.py."
             )

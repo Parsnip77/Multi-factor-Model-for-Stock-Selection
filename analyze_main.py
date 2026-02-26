@@ -33,7 +33,7 @@ from net_backtester import NetReturnBacktester
 DATA_DIR  = ROOT / "data"
 PLOTS_DIR = ROOT / "plots"
 FORWARD_DAYS = 5          # d-day forward return
-IC_MEAN_THRESHOLD = 0.015  # minimum |IC mean| to keep a factor
+IC_MEAN_THRESHOLD = 0.01  # minimum |IC mean| to keep a factor
 ICIR_THRESHOLD = 0.15     # minimum |ICIR| to keep a factor
 SHOW_PLOTS = False         # set False to suppress interactive charts
 COMBINE_WINDOW = 3       # rolling OLS training window (trading days)
@@ -213,6 +213,21 @@ def main() -> None:
         )
         _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
             f"(dates: {synth_df['trade_date'].nunique()})")
+
+        # Apply a 3-day rolling mean per stock to smooth the signal and
+        # reduce day-to-day portfolio turnover.  Rows with fewer than 3
+        # history points (first 2 days per stock) are dropped so the
+        # backtester only operates on fully-smoothed scores.
+        '''
+        synth_df = synth_df.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+        synth_df["synthetic_factor"] = (
+            synth_df.groupby("ts_code")["synthetic_factor"]
+            .transform(lambda s: s.rolling(window=3, min_periods=3).mean())
+        )
+        synth_df = synth_df.dropna(subset=["synthetic_factor"]).reset_index(drop=True)
+        _info(f"  After 3-day smoothing : {synth_df.shape[0]:,} rows  "
+              f"(dates: {synth_df['trade_date'].nunique()})")
+        '''
 
         bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
         perf_synth = bt_synth.run_backtest()
