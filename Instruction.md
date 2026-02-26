@@ -498,7 +498,7 @@
   ```python
   from net_backtester import NetReturnBacktester
 
-  nb = NetReturnBacktester(synth_df, prices_df, forward_days=1,
+  nb = NetReturnBacktester(synth_df, prices_df, forward_days=5,
                            cost_rate=0.002, plots_dir=pathlib.Path("plots"))
   print(nb.run_backtest())  # pd.Series: Ann Return, Sharpe, Breakeven Turnover ...
   nb.plot()                 # 保存至 plots/synthetic_factor_net.png

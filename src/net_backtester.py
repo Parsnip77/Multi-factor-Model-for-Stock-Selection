@@ -24,7 +24,7 @@ Maximum Drawdown, Average Daily Turnover, Breakeven Turnover.
 Public API
 ----------
     nb = NetReturnBacktester(alpha_df, prices_df, forward_days=5,
-                             cost_rate=0.0035, rf=0.03, plots_dir=None)
+                             cost_rate=0.002, rf=0.03, plots_dir=None)
     summary = nb.run_backtest()   # pd.Series of performance metrics
     fig     = nb.plot(show=False) # cumulative NAV chart, saved to plots_dir
 """
@@ -55,7 +55,7 @@ class NetReturnBacktester:
     forward_days : int
         Rebalancing cycle length (= number of overlapping buckets).
     cost_rate : float
-        Round-trip transaction cost rate (default 0.0035 = 35 bps).
+        Round-trip transaction cost rate (default 0.002 = 2 bps).
     rf : float
         Annual risk-free rate for Sharpe and breakeven calculations (default 0.03).
     plots_dir : path-like, optional
