@@ -8,8 +8,8 @@
 
 本项目是一个**多因子选股模型**的量化交易示例，使用 Python 实现从数据获取、因子构建到回测的完整流程。
 
-**当前阶段：数据层（ETL）+ 因子计算层 + 因子预处理层（第一阶段完成）+ 因子评估层（第二阶段完成）**  
-用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子；再通过预处理模块对原始因子执行去极值、标准化、中性化，最终由 `data_preparation_main.py` 串联全流程，将四张核对齐的宽表导出为 Parquet 文件，供后续回测使用。
+**当前阶段：数据层（ETL）+ 因子计算层 + 因子预处理层（第一阶段完成）+ 因子评估层（第二阶段完成）+ ML 合成因子层（第三阶段完成）**  
+用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子；再通过预处理模块对原始因子执行去极值、标准化、中性化，最终由 `data_preparation_main.py` 串联全流程，将四张核对齐的宽表导出为 Parquet 文件。第二阶段对每个因子进行 IC 评估与有效因子筛选。第三阶段接入 LightGBM，以 15 个 alpha 为特征通过滚动训练合成一个 ML Alpha，并调用分层回测与净收益回测，生成完整分析报告。
 
 ---
 
@@ -34,15 +34,19 @@
 │   ├── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
 │   ├── backtester.py           # LayeredBacktester：分层回测（分组、绩效指标、累计净值图）
 │   ├── factor_combiner.py      # rolling_linear_combine：滚动 OLS 线性合成因子
-│   └── net_backtester.py       # NetReturnBacktester：考虑摩擦成本的纯多头重叠组合回测
+│   ├── net_backtester.py       # NetReturnBacktester：考虑摩擦成本的纯多头重叠组合回测
+│   ├── ml_data_prep.py         # WalkForwardSplitter：量化专用时序滚动切分器（第三阶段）
+│   └── lgbm_model.py           # AlphaLGBM：LightGBM 训练引擎 + 特征重要性 + SHAP（第三阶段）
 ├── notebooks/
 │   └── explore.ipynb           # Jupyter Notebook：数据探索与可视化
-├── plots/                      # IC 分析图表输出目录（由 analyze_main.py 自动创建）
+├── plots/                      # 图表输出目录（各阶段脚本自动创建）
 ├── data_preparation_main.py    # 第一阶段总脚本：串联所有组件，导出 Parquet
 ├── analyze_main.py             # 第二阶段总脚本：因子 IC 评估与有效因子筛选
+├── ml_analyze_main.py          # 第三阶段总脚本：LightGBM 合成因子 + 双回测 + 报告生成
 ├── .gitignore                  # 版本控制忽略规则
 ├── requirements.txt            # Python 依赖列表
 ├── result.txt                  # analyze_main.py 自动生成的因子 summary
+├── result_ml.txt               # ml_analyze_main.py 自动生成的 ML 合成因子报告
 └── Instruction.md              # 本说明文档
 ```
 
@@ -58,9 +62,12 @@
 | `src/backtester.py` | `LayeredBacktester`：分层回测，含绩效指标计算与累计净值绘图 |
 | `src/factor_combiner.py` | `rolling_linear_combine`：滚动 OLS 将多个 alpha 线性合成为一个合成因子 |
 | `src/net_backtester.py` | `NetReturnBacktester`：纯多头重叠组合回测，含摩擦成本、换手率、盈亏平衡换手率 |
+| `src/ml_data_prep.py` | `WalkForwardSplitter`：量化专用时序滚动切分器，防止数据泄露（第三阶段） |
+| `src/lgbm_model.py` | `AlphaLGBM`：LightGBM 训练引擎，集成特征重要性绘图与 SHAP 分析（第三阶段） |
 | `data_preparation_main.py` | 第一阶段总脚本：串联 DataEngine → Alpha101 → FactorCleaner，导出四张 Parquet |
 | `analyze_main.py` | 第二阶段总脚本：载入 Parquet，循环单因子 IC 检验，筛选有效 alpha |
-| `plots/` | 图表输出目录（`analyze_main.py` 运行时自动创建），每个因子生成 `{factor}_ic.png` 和 `{factor}_backtest.png` |
+| `ml_analyze_main.py` | 第三阶段总脚本：LightGBM 合成因子 + 双回测（LayeredBacktester + NetReturnBacktester）+ 报告 |
+| `plots/` | 图表输出目录（各阶段脚本自动创建），第三阶段新增 `ml_alpha_ic.png`、`feature_importance.png`、`shap_beeswarm.png`、`ml_alpha_layered.png`、`ml_alpha_net.png` |
 | `data/*.parquet` | 导出的宽表数据，共享主键 (trade_date, ts_code) |
 | `notebooks/explore.ipynb` | 数据探索 + Alpha 因子计算 + 因子清洗示例 |
 | `.gitignore` | 忽略 Token、数据库、本地文档等敏感/冗余文件 |
@@ -515,6 +522,123 @@
 
 ---
 
+### 15. src/ml_data_prep.py
+
+- **用途**：第三阶段 ML 数据切分模块，实现量化专用的滚动时序交叉验证，防止训练集"偷看"未来数据，封装为 `WalkForwardSplitter` 类。
+
+- **核心方法**：
+
+  | 方法 | 说明 |
+  |------|------|
+  | `__init__(train_months=24, val_months=6, test_months=6, embargo_days=1)` | 配置窗口参数。`embargo_days` 为验证集结束到测试集开始的静默期（需 ≥ 预测周期 `d`，防止 Target 数据泄露） |
+  | `split(df)` | 生成器：对含 `trade_date` 列的 DataFrame 滚动切分，每次 yield `(train_mask, val_mask, test_mask)`（布尔掩码） |
+  | `n_splits(df)` | 返回给定数据集上预计可生成的折数（不实际产生掩码） |
+
+- **数据格式要求**：输入 DataFrame 必须包含 `trade_date` 列（YYYYMMDD 整数或 datetime 均可）。
+
+- **使用示例**：
+  ```python
+  from ml_data_prep import WalkForwardSplitter
+
+  splitter = WalkForwardSplitter(train_months=24, val_months=6, test_months=6, embargo_days=5)
+  for train_mask, val_mask, test_mask in splitter.split(df_merged):
+      X_train = df_merged[train_mask][feature_cols]
+      ...
+  ```
+
+---
+
+### 16. src/lgbm_model.py
+
+- **用途**：第三阶段 LightGBM 训练引擎，使用量化实战防过拟合超参数配置，封装为 `AlphaLGBM` 类。同时集成特征重要性可视化与 SHAP 归因分析，无需独立 `feature_importance.py`。
+
+- **超参数设计原则**：
+
+  | 参数 | 值 | 原因 |
+  |------|-----|------|
+  | `objective` | `regression_l1` (MAE) | 对金融极值（黑天鹅）不敏感 |
+  | `max_depth` | 4 | 防止拟合噪音，捕获 2-3 阶交叉逻辑 |
+  | `num_leaves` | 15 | 小于 `2^max_depth=16` |
+  | `subsample` / `colsample_bytree` | 0.8 | 行/列随机采样，增强泛化 |
+  | `learning_rate` | 0.01 | 配合 early stopping 使用 |
+  | `n_estimators` | 1000 | 上限大，由 early stopping 决定实际树数 |
+
+- **核心方法**：
+
+  | 方法 | 说明 |
+  |------|------|
+  | `train(X_train, y_train, X_val, y_val)` | 训练并监控验证集，连续 50 轮无改善则早停 |
+  | `predict(X_test)` | 使用 `best_iteration_` 预测，返回 `np.ndarray` |
+  | `get_feature_importance(importance_type='gain')` | 返回按重要性排序的 `pd.DataFrame`（列：feature, importance） |
+  | `plot_feature_importance(fold, save_path)` | 绘制当前折的特征重要性横向条形图 |
+  | `plot_shap(X_sample, save_path, max_display=15)` | 生成 SHAP beeswarm 图（需安装 `shap`） |
+
+- **使用示例**：
+  ```python
+  from lgbm_model import AlphaLGBM
+
+  model = AlphaLGBM()
+  model.train(X_train, y_train, X_val, y_val)
+  y_pred = model.predict(X_test)
+  imp_df = model.get_feature_importance()      # pd.DataFrame: feature, importance
+  model.plot_shap(X_test.sample(300), save_path=Path("plots/shap.png"))
+  ```
+
+---
+
+### 17. ml_analyze_main.py
+
+- **用途**：第三阶段端到端总脚本，串联数据加载 → 特征合并 → 滚动训练 → 双回测器 → 图表与报告输出。
+
+- **执行流程**：
+
+  | 步骤 | 操作 |
+  |------|------|
+  | 1 | 载入 `factors_clean.parquet`（15 个清洗 alpha）与 `prices.parquet` |
+  | 2 | 调用 `calc_forward_return(prices_df, d=1)` 生成 target（`forward_return`） |
+  | 3 | 按 `(trade_date, ts_code)` 内联合并因子与 target，dropna；对 `forward_return` 做截面百分位排名（`cs_rank_return`）作为训练目标 |
+  | 4 | 初始化 `WalkForwardSplitter`（默认：train=24m, val=6m, test=6m, embargo=1d） |
+  | 5 | 循环各 Fold：以 `cs_rank_return` 为目标训练 `AlphaLGBM`，预测测试集，记录预测结果与特征重要性 |
+  | 6 | 拼接所有 Fold 预测；对每只股票按 3 日滚动均值平滑，降低换手率 |
+  | 7 | IC 分析（`calc_ic` / `calc_ic_metrics` / `plot_ic`），输出 IC Mean、IC Std、ICIR，保存 IC 图（`plots/ml_alpha_ic.png`） |
+  | 8 | 调用 `LayeredBacktester`，生成分层净值图（`plots/ml_alpha_layered.png`） |
+  | 9 | 调用 `NetReturnBacktester`，生成净收益图（`plots/ml_alpha_net.png`） |
+  | 10 | 跨折平均特征重要性条形图（`plots/feature_importance.png`） |
+  | 11 | SHAP beeswarm 图（最后一折测试集采样，`plots/shap_beeswarm.png`） |
+  | 12 | 输出文字报告至 `result_ml.txt` |
+
+- **可调配置**（脚本顶部常量）：
+
+  | 变量 | 默认值 | 说明 |
+  |------|--------|------|
+  | `FORWARD_DAYS` | `1` | 未来收益率天数 |
+  | `TRAIN_MONTHS` | `24` | 训练窗口（月） |
+  | `VAL_MONTHS` | `6` | 验证窗口（月） |
+  | `TEST_MONTHS` | `6` | 测试窗口（月） |
+  | `EMBARGO_DAYS` | `1` | 静默期天数（需 ≥ FORWARD_DAYS） |
+  | `SHAP_SAMPLE_SIZE` | `300` | SHAP 分析采样行数 |
+
+- **输出产物**：
+
+  | 文件 | 内容 |
+  |------|------|
+  | `plots/ml_alpha_ic.png` | ML 合成因子 IC 时间序列图（柱状 + 累计 IC 折线） |
+  | `plots/ml_alpha_layered.png` | 分层回测累计净值图（G1..G5 + Long-Short） |
+  | `plots/ml_alpha_net.png` | 净收益回测累计净值图 |
+  | `plots/feature_importance.png` | 15 个因子的跨折平均特征重要性（gain）条形图 |
+  | `plots/shap_beeswarm.png` | SHAP 蜂群图（特征贡献方向与大小） |
+  | `result_ml.txt` | 完整文字报告：各折信息 + IC 指标 + 分层绩效表 + 净收益绩效指标 + 特征重要性排名 |
+
+- **使用**：
+  ```bash
+  python ml_analyze_main.py
+  # 报告自动保存至 result_ml.txt，图表保存至 plots/
+  ```
+
+- **前提**：已运行 `data_preparation_main.py`，`data/factors_clean.parquet` 和 `data/prices.parquet` 已生成。
+
+---
+
 ## 四、推荐使用流程
 
 ```bash
@@ -538,13 +662,18 @@ python data_preparation_main.py
 # 5. 运行第二阶段总脚本（因子 IC 评估 + 有效因子筛选）
 python analyze_main.py > result.txt
 
-# 6. （可选）打开 Notebook 交互探索数据及因子
+# 6. 运行第三阶段总脚本（LightGBM 合成因子 + 双回测 + 报告）
+python ml_analyze_main.py
+# 报告输出至 result_ml.txt，图表保存至 plots/
+
+# 7. （可选）打开 Notebook 交互探索数据及因子
 jupyter notebook notebooks/explore.ipynb
 ```
 
 > **耗时估算**：数据下载约 15 ~ 40 分钟（300 只股票 × 3 次接口 + 限频 sleep）。  
 > `data_preparation_main.py` 为纯内存运算，通常在 1 分钟内完成。  
-> `analyze_main.py` 为纯内存运算，通常在 1 分钟内完成（含绘图）。
+> `analyze_main.py` 为纯内存运算，通常在 1 分钟内完成（含绘图）。  
+> `ml_analyze_main.py` 含 LightGBM 滚动训练（约 3~4 折），通常在 2 ~ 5 分钟内完成（视 CPU 核心数与数据量）；SHAP 计算额外约 30 秒。
 
 ---
 
