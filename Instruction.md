@@ -68,7 +68,7 @@
 | `analyze_main.py` | 第二阶段总脚本：载入 Parquet，循环单因子 IC 检验，筛选有效 alpha |
 | `ml_analyze_main.py` | 第三阶段总脚本：LightGBM 合成因子 + 双回测（LayeredBacktester + NetReturnBacktester）+ 报告 |
 | `plots/` | 图表输出目录（各阶段脚本自动创建），第三阶段新增 `ml_alpha_ic.png`、`feature_importance.png`、`shap_beeswarm.png`、`ml_alpha_layered.png`、`ml_alpha_net.png` |
-| `data/*.parquet` | 导出的宽表数据，共享主键 (trade_date, ts_code) |
+| `data/*.parquet` | 导出的宽表数据，共享主键 (trade_date, ts_code)；`prices.parquet` 含 `tradable` 列，`factors_clean.parquet` 中不可交易格子为 NaN |
 | `notebooks/explore.ipynb` | 数据探索 + Alpha 因子计算 + 因子清洗示例 |
 | `.gitignore` | 忽略 Token、数据库、本地文档等敏感/冗余文件 |
 | `requirements.txt` | `pip install -r requirements.txt` 所需依赖 |
@@ -277,7 +277,7 @@
 
 ### 7. data_preparation_main.py
 
-- **用途**：第一阶段端到端总脚本，串联 `DataEngine → Alpha101 → FactorCleaner`，将全流程处理结果导出为四张 Parquet 文件。
+- **用途**：第一阶段端到端总脚本，串联 `DataEngine → _compute_tradable → Alpha101 → FactorCleaner`，将全流程处理结果导出为四张 Parquet 文件。
 
 - **执行流程**：
 
@@ -285,18 +285,30 @@
   |------|------|
   | 1 | 检查 `data/stock_data.db` 是否存在，缺失则报错退出 |
   | 2 | 调用 `DataEngine.load_data()` 载入全量数据 |
+  | 2.5 | 调用 `_compute_tradable(df_price)` 计算可交易性掩码（停牌 / 退市 / 涨跌停） |
   | 3 | 调用 `Alpha101.get_all_alphas()` 计算原始 Alpha 因子（前复权） |
-  | 4 | 调用 `FactorCleaner.process_all()` 执行五步清洗流水线 |
+  | 4 | 调用 `FactorCleaner.process_all()` 执行五步清洗流水线；之后对不可交易股票-日期覆写为 NaN |
   | 5 | 将结果导出为四张 Parquet 文件（见下） |
+  | 6 | 打印汇总信息 |
+
+- **`_compute_tradable(df_price)` 判断逻辑**：
+
+  | 条件 | 标准 | 说明 |
+  |------|------|------|
+  | 停牌 | `vol == 0` | 当日成交量为零，无法交易 |
+  | 退市 | `close` 为 NaN 或 0 | 股票已不存在 |
+  | 涨跌停 | `|pct_chg| > 9.5%` 且收盘价紧贴最高/最低价 | 实际流动性极低，无法以市价入场 |
+
+  返回 `pd.Series[bool]`（MultiIndex date×code），`True` = 可交易。
 
 - **输出文件**（均存放于 `./data/`，主键逻辑对齐：`trade_date × ts_code`）：
 
   | 文件 | 列 | 说明 |
   |------|----|------|
-  | `prices.parquet` | trade_date, ts_code, open, high, low, close, volume, adj_factor | 原始（未复权）行情 + 复权因子 |
+  | `prices.parquet` | trade_date, ts_code, open, high, low, close, volume, adj_factor, **tradable** | 原始（未复权）行情 + 复权因子 + 可交易性标志（bool） |
   | `meta.parquet` | trade_date, ts_code, total_mv, industry, pe, pb | 每日基本面 + 静态行业分类 |
   | `factors_raw.parquet` | trade_date, ts_code, alpha006, … | 原始因子值（保留 NaN） |
-  | `factors_clean.parquet` | trade_date, ts_code, alpha006, … | 清洗后因子值（NaN 填补为 0） |
+  | `factors_clean.parquet` | trade_date, ts_code, alpha006, … | 清洗后因子值；**不可交易的股票-日期格子为 NaN**（不再填 0），下游回测 `dropna` 自动排除 |
 
 - **使用**：
   ```bash
