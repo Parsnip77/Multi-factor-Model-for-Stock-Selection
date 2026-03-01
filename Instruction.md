@@ -33,7 +33,7 @@
 │   ├── targets.py              # calc_forward_return：未来收益率标签生成
 │   ├── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
 │   ├── backtester.py           # LayeredBacktester：分层回测（分组、绩效指标、累计净值图）
-│   ├── factor_combiner.py      # rolling_linear_combine：滚动 OLS 线性合成因子
+│   ├── factor_combiner.py      # symmetric_orthogonalize + rolling_linear_combine：对称正交化 + 滚动 OLS 线性合成因子
 │   ├── net_backtester.py       # NetReturnBacktester：考虑摩擦成本的纯多头重叠组合回测
 │   ├── ml_data_prep.py         # WalkForwardSplitter：量化专用时序滚动切分器（第三阶段）
 │   └── lgbm_model.py           # AlphaLGBM：LightGBM 训练引擎 + 特征重要性 + SHAP（第三阶段）
@@ -60,7 +60,7 @@
 | `src/targets.py` | `calc_forward_return(prices_df, d)`：计算 d 日未来收益率标签 |
 | `src/ic_analyzer.py` | `calc_ic` / `calc_ic_metrics` / `plot_ic`：截面 Spearman IC 评估 |
 | `src/backtester.py` | `LayeredBacktester`：分层回测，含绩效指标计算与累计净值绘图 |
-| `src/factor_combiner.py` | `rolling_linear_combine`：滚动 OLS 将多个 alpha 线性合成为一个合成因子 |
+| `src/factor_combiner.py` | `symmetric_orthogonalize`（Löwdin 正交化）+ `rolling_linear_combine`（含正交化开关的滚动 OLS 合成因子） |
 | `src/net_backtester.py` | `NetReturnBacktester`：纯多头重叠组合回测，含摩擦成本、换手率、盈亏平衡换手率 |
 | `src/ml_data_prep.py` | `WalkForwardSplitter`：量化专用时序滚动切分器，防止数据泄露（第三阶段） |
 | `src/lgbm_model.py` | `AlphaLGBM`：LightGBM 训练引擎，集成特征重要性绘图与 SHAP 分析（第三阶段） |
@@ -364,7 +364,7 @@
 
 ### 10. analyze_main.py
 
-- **用途**：第二阶段端到端总脚本，串联 targets → ic_analyzer，逐因子输出 IC 评估报告，并筛选有效因子。
+- **用途**：第二阶段端到端总脚本，串联 targets → ic_analyzer → 有效因子筛选 → 全因子对称正交化滚动 OLS 合成 → 双回测，输出报告至控制台与 `result.txt`。
 
 - **执行流程**：
 
@@ -372,13 +372,15 @@
   |------|------|
   | 1 | 载入 `prices.parquet` 与 `factors_clean.parquet` |
   | 2 | 调用 `calc_forward_return(prices_df, d=5)` 生成 target |
-  | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，展示图表 |
-  | 4 | 筛选满足 `abs(IC mean) > 0.01` 且 `abs(ICIR) > 0.15` 的因子并输出列表 |
+  | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，输出图表与分层回测 |
+  | 4 | 筛选满足 `abs(IC mean) > IC_MEAN_THRESHOLD` 且 `abs(ICIR) > ICIR_THRESHOLD` 的因子，仅用于展示 |
+  | 5 | 以全部 15 个因子（`alpha_cols`）为自变量，对横截面 pct-rank 收益率做滚动 OLS；每截面先调用 `symmetric_orthogonalize` 消除共线性（可通过 `orthogonalize=False` 关闭），得到合成因子后接 `LayeredBacktester` 分层回测 |
+  | 6 | 以合成因子调用 `NetReturnBacktester` 进行含摩擦成本的净收益回测 |
 
 - **使用**：
   ```bash
-  python analyze_main.py > result.txt
-  # 关键统计信息打印到 result.txt
+  python analyze_main.py
+  # 关键统计信息同时打印到控制台与 result.txt
   ```
 
 - **可调配置**（脚本顶部常量）：
@@ -386,9 +388,10 @@
   | 变量 | 默认值 | 说明 |
   |------|--------|------|
   | `FORWARD_DAYS` | `5` | 未来收益率天数 |
-  | `IC_MEAN_THRESHOLD` | `0.01` | IC 均值绝对值阈值 |
-  | `ICIR_THRESHOLD` | `0.15` | ICIR 绝对值阈值 |
+  | `IC_MEAN_THRESHOLD` | `0.015` | IC 均值绝对值阈值（仅用于展示筛选，不影响 OLS 因子集） |
+  | `ICIR_THRESHOLD` | `0.20` | ICIR 绝对值阈值（同上） |
   | `SHOW_PLOTS` | `False` | 是否交互展示 IC 图表 |
+  | `COMBINE_WINDOW` | `3` | 滚动 OLS 训练窗口天数 |
 
 ---
 
@@ -441,36 +444,53 @@
 
 ### 12. src/factor_combiner.py
 
-- **用途**：将多个有效 alpha 因子通过滚动 OLS 回归线性合成为一个综合因子（Synthetic Factor），供 `LayeredBacktester` 进行回测。
+- **用途**：将多个 alpha 因子通过对称正交化 + 滚动 OLS 回归线性合成为一个综合因子（Synthetic Factor），供 `LayeredBacktester` 进行回测。
 
-- **核心函数**：`rolling_linear_combine(factors_df, target_df, factor_cols, window=3)`
+- **公开函数**：
+  - `symmetric_orthogonalize(X, min_eigenvalue=1e-8)`：Löwdin 对称正交化，对 N×K 截面矩阵消除列间共线性
+  - `rolling_linear_combine(factors_df, target_df, factor_cols, window=60, orthogonalize=True)`：滚动 OLS 合成，含正交化开关
 
-- **逻辑流程**：
+- **`symmetric_orthogonalize` 逻辑**：
+  - 计算截面协方差矩阵 `C = X.T @ X / N`
+  - 特征分解 → 计算 `C^(-1/2) = V @ diag(λ^-0.5) @ V.T`
+  - 输出 `X @ C^(-1/2)`，各列正交且保留原始列空间的对称结构
+
+- **`rolling_linear_combine` 逻辑流程**：
 
   | 步骤 | 操作 |
   |------|------|
   | 1. 数据准备 | merge factors + target，dropna，按日期排序 |
-  | 2. 滚动预测 | 对每个预测日 T，取 [T-window, T-1] 的数据拟合 OLS：`Y = β₁X₁ + ... + βₖXₖ` |
-  | 3. 打分 | 用拟合的 β 向量对预测日 T 当天的因子截面做矩阵乘积，得到预测得分 |
-  | 4. 裁剪 | 头部 window 个交易日无法形成训练集，自动跳过，仅保留有预测结果的日期 |
+  | 2. 滚动预测 | 对每个预测日 T，取 [T-window, T-1] 的数据：若 `orthogonalize=True` 则逐截面正交化后堆叠，再拟合 OLS：`Y = β₁X₁ + ... + βₖXₖ` |
+  | 3. 打分 | 预测日 T 当天截面同样（视开关）先正交化，再与 β 做矩阵乘积得分 |
+  | 4. 裁剪 | 头部 window 个交易日自动跳过 |
   | 5. 标准化 | 对每日截面做 z-score 归一化（均值 0，标准差 1） |
 
 - **输入**：
   - `factors_df`：平表，含 `trade_date` / `ts_code` / 若干 alpha 列
   - `target_df`：forward_return 标签（MultiIndex 或平表均可）
   - `factor_cols`：参与合成的 alpha 列名列表（至少 1 个）
-  - `window`：滚动训练窗口天数（默认 3）
+  - `window`：滚动训练窗口天数（默认 60）
+  - `orthogonalize`：是否在 OLS 前对每截面做对称正交化（默认 `True`，设为 `False` 退化为原始行为）
 
-- **输出**：平表 DataFrame，列 `[trade_date, ts_code, synthetic_factor]`，z-score 标准化完毕，头尾空白已裁剪
+- **输出**：平表 DataFrame，列 `[trade_date, ts_code, synthetic_factor]`，z-score 标准化完毕，头部 window 天已裁剪
 
 - **使用示例**：
   ```python
   from factor_combiner import rolling_linear_combine
 
+  # 打开正交化（默认）
   synth_df = rolling_linear_combine(
       factors_df, target_df,
-      factor_cols=["alpha042", "alpha054", "alpha038"],
-      window=3,
+      factor_cols=alpha_cols,   # 全部 15 个因子
+      window=60,
+      orthogonalize=True,
+  )
+  # 关闭正交化（退化为原始 OLS）
+  synth_df = rolling_linear_combine(
+      factors_df, target_df,
+      factor_cols=alpha_cols,
+      window=60,
+      orthogonalize=False,
   )
   # 然后送入 LayeredBacktester
   from backtester import LayeredBacktester

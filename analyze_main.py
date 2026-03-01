@@ -33,10 +33,10 @@ from net_backtester import NetReturnBacktester
 DATA_DIR  = ROOT / "data"
 PLOTS_DIR = ROOT / "plots"
 FORWARD_DAYS = 5          # d-day forward return
-IC_MEAN_THRESHOLD = 0.01  # minimum |IC mean| to keep a factor
-ICIR_THRESHOLD = 0.15     # minimum |ICIR| to keep a factor
-SHOW_PLOTS = False         # set False to suppress interactive charts
-COMBINE_WINDOW = 3       # rolling OLS training window (trading days)
+IC_MEAN_THRESHOLD = 0.015  # minimum |IC mean| to keep a factor
+ICIR_THRESHOLD = 0.20      # minimum |ICIR| to keep a factor
+SHOW_PLOTS = False        # set False to suppress interactive charts
+COMBINE_WINDOW = 3        # rolling OLS training window (trading days)
 
 
 # -----------------------------------------------------------------------
@@ -174,129 +174,58 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 5: Synthetic factor via rolling OLS combination
     # ------------------------------------------------------------------
-    _step("Step 5 / 6  —  Synthetic factor (rolling OLS)")
+    _step("Step 5 / 6  —  Synthetic factor (rolling OLS + symmetric orthogonalization)")
 
-    synth_df = None  # will be set if combination succeeds
+    _info(f"Effective alphas (IC/ICIR screen, for reference): {effective_alphas}")
+    _info(f"Using ALL {len(alpha_cols)} factors for OLS combination: {alpha_cols}")
+    _info(f"Rolling window = {COMBINE_WINDOW} trading days  |  orthogonalize = True")
 
-    if len(effective_alphas) == 0:
-        _info("Skipped: no effective alphas found.")
-    elif len(effective_alphas) == 1:
-        alpha_name = effective_alphas[0]
-        _info(f"Only 1 effective alpha ({alpha_name}); skipping OLS combination.")
-        _info("Using single factor directly as synthetic factor for Step 6.")
-        single = factors_df[["trade_date", "ts_code", alpha_name]].copy()
-        if effective_alphas_ic_mean[alpha_name] < 0:
-            _info(f"  Reverse factor (IC mean < 0): negating values so high score = high expected return.")
-            single[alpha_name] = -single[alpha_name]
-        single = single.rename(columns={alpha_name: "synthetic_factor"})
-        synth_df = single
-    else:
-        _info(f"Combining {len(effective_alphas)} factors: {effective_alphas}")
-        _info(f"Rolling window = {COMBINE_WINDOW} trading days")
+    # Use cross-sectional percentile rank of forward_return as the OLS
+    # regression target.  This removes the market-wide daily move (beta)
+    # from the label, so the model learns relative stock selection ability
+    # rather than fitting to the overall market direction.
+    target_flat = target_df.reset_index()[["trade_date", "ts_code", "forward_return"]]
+    target_cs_rank = target_flat.copy()
+    target_cs_rank["forward_return"] = target_cs_rank.groupby("trade_date")[
+        "forward_return"
+    ].rank(pct=True)
+    _info("  OLS target: cross-sectional pct-rank of forward_return (per trade_date)")
 
-        # Use cross-sectional percentile rank of forward_return as the OLS
-        # regression target.  This removes the market-wide daily move (beta)
-        # from the label, so the model learns relative stock selection ability
-        # rather than fitting to the overall market direction.
-        target_flat = target_df.reset_index()[["trade_date", "ts_code", "forward_return"]]
-        target_cs_rank = target_flat.copy()
-        target_cs_rank["forward_return"] = target_cs_rank.groupby("trade_date")[
-            "forward_return"
-        ].rank(pct=True)
-        _info("  OLS target: cross-sectional pct-rank of forward_return (per trade_date)")
+    synth_df = rolling_linear_combine(
+        factors_df,
+        target_cs_rank,
+        factor_cols=alpha_cols,
+        window=COMBINE_WINDOW,
+        orthogonalize=True,
+    )
+    _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
+        f"(dates: {synth_df['trade_date'].nunique()})")
 
-        synth_df = rolling_linear_combine(
-            factors_df,
-            target_cs_rank,
-            factor_cols=effective_alphas,
-            window=COMBINE_WINDOW,
-        )
-        _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
-            f"(dates: {synth_df['trade_date'].nunique()})")
-
-        # Apply a 3-day rolling mean per stock to smooth the signal and
-        # reduce day-to-day portfolio turnover.  Rows with fewer than 3
-        # history points (first 2 days per stock) are dropped so the
-        # backtester only operates on fully-smoothed scores.
-        '''
-        synth_df = synth_df.sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
-        synth_df["synthetic_factor"] = (
-            synth_df.groupby("ts_code")["synthetic_factor"]
-            .transform(lambda s: s.rolling(window=3, min_periods=3).mean())
-        )
-        synth_df = synth_df.dropna(subset=["synthetic_factor"]).reset_index(drop=True)
-        _info(f"  After 3-day smoothing : {synth_df.shape[0]:,} rows  "
-              f"(dates: {synth_df['trade_date'].nunique()})")
-        '''
-
-        bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
-        perf_synth = bt_synth.run_backtest()
-        _info("  Backtest metrics (synthetic factor):")
-        _p(perf_synth.to_string())
-        bt_synth.plot(show=SHOW_PLOTS)
-        _info("  Synthetic backtest plot saved.")
-    '''
-    else:
-        _info(f"Combining {len(effective_alphas)} factors with equal weights: {effective_alphas}")
-
-        # --- Step 5: equal-weight combination ---
-        sub = factors_df[["trade_date", "ts_code"] + effective_alphas].copy()
-
-        # 1. Cross-sectional z-score normalisation per date
-        def _zscore(x: pd.Series) -> pd.Series:
-            std = x.std()
-            return (x - x.mean()) / std if std > 0 else pd.Series(0.0, index=x.index)
-
-        for col in effective_alphas:
-            sub[col] = sub.groupby("trade_date")[col].transform(_zscore)
-
-        # 2. Flip sign for reverse factors so high score => high expected return
-        for col in effective_alphas:
-            if effective_alphas_ic_mean[col] < 0:
-                _info(f"  Reverse factor ({col}): negating values.")
-                sub[col] = -sub[col]
-
-        # 3. Equal-weight average
-        sub["synthetic_factor"] = sub[effective_alphas].mean(axis=1)
-
-        # 4. Drop rows where synthetic_factor is NaN
-        sub = sub.dropna(subset=["synthetic_factor"])
-
-        synth_df = sub[["trade_date", "ts_code", "synthetic_factor"]].copy()
-
-        _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
-            f"(dates: {synth_df['trade_date'].nunique()})")
-
-        bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
-        perf_synth = bt_synth.run_backtest()
-        _info("  Backtest metrics (synthetic factor):")
-        _p(perf_synth.to_string())
-        bt_synth.plot(show=SHOW_PLOTS)
-        _info("  Synthetic backtest plot saved.")
-
-    '''
+    bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
+    perf_synth = bt_synth.run_backtest()
+    _info("  Backtest metrics (synthetic factor):")
+    _p(perf_synth.to_string())
+    bt_synth.plot(show=SHOW_PLOTS)
+    _info("  Synthetic backtest plot saved.")
 
     # ------------------------------------------------------------------
     # Step 6: Net-return backtest with transaction costs
     # ------------------------------------------------------------------
     _step("Step 6 / 6  —  Net-return backtest (with transaction costs)")
 
-    if synth_df is None:
-        _info("Skipped: no synthetic factor available (Step 5 was skipped).")
-    else:
-        _info(f"cost_rate = {0.002:.2%}  |  forward_days = {FORWARD_DAYS}  |  top 20%")
-        nb = NetReturnBacktester(
-            synth_df,
-            prices_df,
-            forward_days=FORWARD_DAYS,
-            cost_rate=0.002,
-            plots_dir=PLOTS_DIR,
-        )
-        net_summary = nb.run_backtest()
-        _info("  Net-return performance summary:")
-        _p(net_summary.to_string())
-        nb.plot(show=SHOW_PLOTS)
-        _info("  Net-return chart saved.")
+    _info(f"cost_rate = {0.002:.2%}  |  forward_days = {FORWARD_DAYS}  |  top 20%")
+    nb = NetReturnBacktester(
+        synth_df,
+        prices_df,
+        forward_days=FORWARD_DAYS,
+        cost_rate=0.002,
+        plots_dir=PLOTS_DIR,
+    )
+    net_summary = nb.run_backtest()
+    _info("  Net-return performance summary:")
+    _p(net_summary.to_string())
+    nb.plot(show=SHOW_PLOTS)
+    _info("  Net-return chart saved.")
 
     _p(f"\n{'=' * 62}")
     _p("  Phase 2 factor analysis complete.")
