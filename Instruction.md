@@ -114,14 +114,15 @@
 
   | 表名 | 字段 | 说明 |
   |------|------|------|
-  | `daily_price` | code, date, open, high, low, close, vol, **amount** | 日线行情，主键 (code, date) |
-  | `daily_basic` | code, date, pe, pb, total_mv | 每日基本面指标，主键 (code, date) |
-  | `stock_info` | code, name, industry | 股票静态信息（行业分类），主键 code |
-  | **`adj_factor`** | code, date, adj_factor | 复权因子（前/后复权计算用），主键 (code, date) |
+  | `daily_price` | code, date, open, high, low, close, vol, amount | 日线行情，主键 (code, date) |
+  | `daily_basic` | code, date, turnover_rate, turnover_rate_f, volume_ratio, pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm, total_share, float_share, free_share, total_mv, circ_mv | 每日扩展基本面（17 字段），主键 (code, date) |
+  | `stock_info` | code, name, industry, list_date | 股票静态信息，主键 code；`list_date` 用于准新股过滤 |
+  | `adj_factor` | code, date, adj_factor | 复权因子（前/后复权计算用），主键 (code, date) |
+  | `stock_st` | code, start_date, end_date | ST/\*ST 状态历史区间；end_date 为 NULL 表示仍处于 ST 状态；无 ST 历史的股票写入哨兵行 (start_date='99991231') |
 
   > **VWAP 计算**：`amount`（千元）× 1000 ÷（`vol`（手）× 100）= `amount × 10 / vol` 元/股。`vol` 与 `amount` 在任何情况下**不复权**。
 
-  > **模式迁移**：若数据库由旧版下载（缺少 `amount` 列或 `adj_factor` 表），调用 `init_db()` 可自动添加缺失列/表。缺少 `amount` 的历史行不会自动补充，需删除对应股票的 `daily_price` 数据后重新下载。
+  > **模式迁移**：调用 `init_db()` 可对旧版数据库自动补全缺失列/表（幂等，使用 `try/except OperationalError` 方式）。新增的 `daily_basic` 扩展列、`stock_info.list_date`、`stock_st` 表均通过此机制自动添加。已缓存记录的新列默认为 NULL，需删除数据库后重新下载才能获得完整数据。
 
 - **核心方法**：
 
@@ -129,7 +130,7 @@
   |------|------|
   | `__init__()` | 初始化 Tushare Pro API，解析数据库路径 |
   | `init_db()` | 建表 + 模式迁移（幂等，可重复调用） |
-  | `download_data()` | 下载 price/basic/adj_factor；两套独立缓存，可单独补充缺失的 adj_factor |
+  | `download_data()` | 下载 price / extended basic / adj_factor / ST 状态；四套独立缓存，可单独补充缺失数据 |
   | `fetch_latest_adj_factor(codes)` | 即时调用 Tushare API 获取最新复权因子，供前复权使用 |
   | `load_data()` | 从 SQLite 读取，返回结构化字典（见下） |
 
@@ -137,9 +138,11 @@
   ```python
   {
     "df_price"    : DataFrame  # MultiIndex (date, code)，列：open, high, low, close, vol, amount
-    "df_mv"       : DataFrame  # MultiIndex (date, code)，列：total_mv
-    "df_industry" : DataFrame  # index = code，列：name, industry
+    "df_mv"       : DataFrame  # MultiIndex (date, code)，列：total_mv（向后兼容）
+    "df_basic"    : DataFrame  # MultiIndex (date, code)，15 个扩展基本面字段
+    "df_industry" : DataFrame  # index = code，列：name, industry, list_date
     "df_adj"      : DataFrame  # MultiIndex (date, code)，列：adj_factor
+    "df_st"       : DataFrame  # 列：code, start_date, end_date（ST 状态区间）
   }
   ```
 
@@ -285,19 +288,21 @@
   |------|------|
   | 1 | 检查 `data/stock_data.db` 是否存在，缺失则报错退出 |
   | 2 | 调用 `DataEngine.load_data()` 载入全量数据 |
-  | 2.5 | 调用 `_compute_tradable(df_price)` 计算可交易性掩码（停牌 / 退市 / 涨跌停） |
+  | 2.5 | 调用 `_compute_tradable(df_price, df_st, list_date_series)` 计算可交易性掩码（停牌 / 退市 / 涨跌停 / ST / 准新股） |
   | 3 | 调用 `Alpha101.get_all_alphas()` 计算原始 Alpha 因子（前复权） |
   | 4 | 调用 `FactorCleaner.process_all()` 执行五步清洗流水线；之后对不可交易股票-日期覆写为 NaN |
   | 5 | 将结果导出为四张 Parquet 文件（见下） |
   | 6 | 打印汇总信息 |
 
-- **`_compute_tradable(df_price)` 判断逻辑**：
+- **`_compute_tradable(df_price, df_st, list_date_series)` 判断逻辑**（五个条件，任一成立即标记为不可交易）：
 
   | 条件 | 标准 | 说明 |
   |------|------|------|
   | 停牌 | `vol == 0` | 当日成交量为零，无法交易 |
   | 退市 | `close` 为 NaN 或 0 | 股票已不存在 |
   | 涨跌停 | `abs(pct_chg) > 9.5%` 且收盘价紧贴最高/最低价 | 实际流动性极低，无法以市价入场 |
+  | ST/\*ST | 当日在 `stock_st` 表记录的任一 ST 区间内 | ST 股价格波动异常、涨跌停板缩窄至 ±5%，收益分布失真 |
+  | 准新股 | 上市日期到该截面不足 180 个自然日 | IPO 初期价格发现机制不稳定，因子信号可靠性低 |
 
   返回 `pd.Series[bool]`（MultiIndex date×code），`True` = 可交易。
 
@@ -306,7 +311,7 @@
   | 文件 | 列 | 说明 |
   |------|----|------|
   | `prices.parquet` | trade_date, ts_code, open, high, low, close, volume, adj_factor, **tradable** | 原始（未复权）行情 + 复权因子 + 可交易性标志（bool） |
-  | `meta.parquet` | trade_date, ts_code, total_mv, industry, pe, pb | 每日基本面 + 静态行业分类 |
+  | `meta.parquet` | trade_date, ts_code, industry, turnover_rate, turnover_rate_f, volume_ratio, pe, pe_ttm, pb, ps, ps_ttm, dv_ratio, dv_ttm, total_share, float_share, free_share, total_mv, circ_mv | 每日扩展基本面（15 字段）+ 静态行业分类 |
   | `factors_raw.parquet` | trade_date, ts_code, alpha006, … | 原始因子值（保留 NaN） |
   | `factors_clean.parquet` | trade_date, ts_code, alpha006, … | 清洗后因子值；**不可交易的股票-日期格子为 NaN**（不再填 0），下游回测 `dropna` 自动排除 |
 
@@ -547,9 +552,9 @@
 
 ### 14. data/stock_data.db
 
-- **用途**：本地 SQLite 数据库，存储**四张表**：`daily_price`（含 amount）、`daily_basic`、`stock_info`、`adj_factor`。
+- **用途**：本地 SQLite 数据库，存储**五张表**：`daily_price`、`daily_basic`（含 15 个扩展基本面字段）、`stock_info`（含 `list_date`）、`adj_factor`、`stock_st`（ST 状态区间）。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。
-- **模式迁移**：重新调用 `init_db()` 可对旧版数据库自动补全 `amount` 列与 `adj_factor` 表。
+- **模式迁移**：重新调用 `init_db()` 可对旧版数据库自动补全新列与新表（`amount`、`list_date`、扩展 `daily_basic` 列、`stock_st` 表）。
 - **git 状态**：已在 `.gitignore` 中排除（文件较大，且可随时重新生成）。
 
 ---

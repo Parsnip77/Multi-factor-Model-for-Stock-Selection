@@ -9,7 +9,7 @@ Execution order:
     4. Clean alpha factors via FactorCleaner; override non-tradable cells to NaN.
     5. Export four Parquet files to ./data/:
          prices.parquet        — raw OHLCV + adj_factor + tradable, keyed (trade_date, ts_code)
-         meta.parquet          — market-cap, industry, PE, PB, keyed (trade_date, ts_code)
+         meta.parquet          — 15 extended fundamentals + industry, keyed (trade_date, ts_code)
          factors_raw.parquet   — raw alpha values, keyed (trade_date, ts_code)
          factors_clean.parquet — cleaned alpha values; non-tradable cells are NaN
                                  (keyed (trade_date, ts_code))
@@ -78,24 +78,43 @@ def _flatten(df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _compute_tradable(df_price: pd.DataFrame) -> pd.Series:
+def _compute_tradable(
+    df_price: pd.DataFrame,
+    df_st: pd.DataFrame,
+    list_date_series: pd.Series,
+) -> pd.Series:
     """Return a boolean Series (MultiIndex date×code) marking tradable stock-days.
 
-    A stock-day is considered NOT tradable under any of these three conditions:
+    A stock-day is considered NOT tradable under any of these five conditions:
 
-    1. Suspended  — trading volume is zero (no transactions occurred).
-    2. Delisted   — closing price is NaN or exactly zero (stock no longer exists).
-    3. Limit hit  — daily price change exceeds 9.5 % AND the closing price is
-                    flush against the intraday high (limit-up) or low (limit-down).
-                    Entering a position at limit price is practically impossible
-                    due to zero or near-zero available liquidity on that side.
+    1. Suspended   — trading volume is zero (no transactions occurred).
+    2. Delisted    — closing price is NaN or exactly zero.
+    3. Limit hit   — daily price change exceeds 9.5 % AND closing price is flush
+                     against the intraday high (limit-up) or low (limit-down).
+    4. ST status   — the stock carries an ST / *ST designation on that date,
+                     as recorded in the stock_st table.  ST stocks are subject
+                     to tighter price limits (±5 %) and carry elevated delisting
+                     risk, making their returns statistically unreliable.
+    5. New listing — the stock has been listed for fewer than 180 calendar days
+                     as of that date (IPO lock-up / price discovery period).
+
+    Parameters
+    ----------
+    df_price : pd.DataFrame
+        MultiIndex (date, code), columns include close / high / low / vol.
+    df_st : pd.DataFrame
+        ST status intervals with columns [code, start_date, end_date].
+        end_date may be NULL/NaN for ongoing ST status; sentinel rows with
+        start_date = '99991231' indicate no ST history for that stock.
+    list_date_series : pd.Series
+        index = code (str), values = list_date (str 'YYYYMMDD').
+        Stocks missing from this Series are treated as having no IPO filter.
 
     Returns
     -------
     pd.Series[bool]
         True  = tradable on that date.
-        False = suspended / delisted / at limit — should be excluded from
-                factor scoring and backtesting.
+        False = excluded from factor scoring and backtesting.
     """
     close = df_price["close"]
     high  = df_price["high"]
@@ -108,10 +127,7 @@ def _compute_tradable(df_price: pd.DataFrame) -> pd.Series:
     # 2. Delisted: missing or zero close price
     delisted = close.isna() | (close == 0)
 
-    # 3. Limit-up / limit-down:
-    #    pct_change is computed per stock (unstack → pct_change → stack).
-    #    The 9.5% threshold (vs. the formal 10%) gives a small safety margin
-    #    for ST stocks whose limit is ±5%, and for minor float precision.
+    # 3. Limit-up / limit-down
     pct_chg = (
         close.unstack("code")
              .pct_change()
@@ -123,7 +139,40 @@ def _compute_tradable(df_price: pd.DataFrame) -> pd.Series:
     at_low     = (close - low).abs() <= low.abs()  * 1e-4
     limit_hit  = large_move & (at_high | at_low)
 
-    not_tradable = suspended | delisted | limit_hit
+    # 4. ST status: expand ST intervals to a (date, code) boolean mask.
+    #    Sentinel rows (start_date='99991231') represent "no ST history" and
+    #    are harmless — no real trading date will ever match that value.
+    idx_flat = df_price.index.to_frame(index=False)  # columns: date, code
+    df_st_clean = df_st.copy()
+    df_st_clean["end_date"] = df_st_clean["end_date"].fillna(config.END_DATE)
+    merged = idx_flat.merge(df_st_clean, on="code", how="left")
+    is_st_flat = (
+        (merged["date"] >= merged["start_date"])
+        & (merged["date"] <= merged["end_date"])
+    ).fillna(False)
+    # Aggregate: a (date, code) is ST if any ST interval covers it
+    is_st = is_st_flat.groupby([merged["date"], merged["code"]]).any()
+    # Rebuild as a Series aligned to df_price.index
+    is_st_series = pd.Series(
+        is_st.reindex(
+            pd.MultiIndex.from_frame(idx_flat), fill_value=False
+        ).values,
+        index=df_price.index,
+    )
+
+    # 5. New listing: listed for fewer than 180 calendar days
+    price_dates = pd.to_datetime(df_price.index.get_level_values("date"))
+    list_dates = pd.to_datetime(
+        df_price.index.get_level_values("code").map(list_date_series),
+        errors="coerce",
+    )
+    tdiff = pd.Series(price_dates - list_dates, index=df_price.index)
+    ipo_flag = pd.Series(
+        (tdiff.dt.days < 180).fillna(False).values,
+        index=df_price.index,
+    )
+
+    not_tradable = suspended | delisted | limit_hit | is_st_series | ipo_flag
     return ~not_tradable   # True = tradable
 
 
@@ -159,42 +208,65 @@ def main() -> None:
     data = engine.load_data()
 
     df_price    = data["df_price"]     # MultiIndex (date, code), cols: open/high/low/close/vol/amount
-    df_mv       = data["df_mv"]        # MultiIndex (date, code), col: total_mv
-    df_industry = data["df_industry"]  # index = code, cols: name, industry
+    df_mv       = data["df_mv"]        # MultiIndex (date, code), col: total_mv (backward compat)
+    df_basic    = data["df_basic"]     # MultiIndex (date, code), 15 fundamental fields
+    df_industry = data["df_industry"]  # index = code, cols: name, industry, list_date
     df_adj      = data["df_adj"]       # MultiIndex (date, code), col: adj_factor
+    df_st       = data["df_st"]        # flat DataFrame: code / start_date / end_date
 
     _ok(f"daily_price  : {df_price.shape[0]:>7,} rows  |  cols: {df_price.columns.tolist()}")
-    _ok(f"df_mv        : {df_mv.shape[0]:>7,} rows")
-    _ok(f"stock_info   : {len(df_industry):>7,} stocks  "
-        f"|  {df_industry['industry'].nunique()} industries")
-    _ok(f"adj_factor   : {df_adj.shape[0]:>7,} rows")
-
-    # Load pe / pb alongside total_mv for the meta table.
-    # DataEngine.load_data() exposes only total_mv, so we query directly.
-    conn = sqlite3.connect(str(db_path))
-    df_basic = pd.read_sql(
-        "SELECT code, date, pe, pb, total_mv FROM daily_basic", conn
-    )
-    conn.close()
-    df_basic = df_basic.set_index(["date", "code"]).sort_index()
     _ok(f"daily_basic  : {df_basic.shape[0]:>7,} rows  |  cols: {df_basic.columns.tolist()}")
+    _ok(f"stock_info   : {len(df_industry):>7,} stocks  "
+        f"|  {df_industry['industry'].nunique()} industries"
+        f"  |  list_date available: {'list_date' in df_industry.columns}")
+    _ok(f"adj_factor   : {df_adj.shape[0]:>7,} rows")
+    _ok(f"stock_st     : {len(df_st):>7,} ST interval records  "
+        f"|  {df_st['code'].nunique()} stocks")
 
     # ----------------------------------------------------------------
     # Step 2.5: Compute tradable mask
     # ----------------------------------------------------------------
-    _step("Step 2.5 / 6  —  Computing tradable mask  (suspended / delisted / limit-hit)")
+    _step("Step 2.5 / 6  —  Computing tradable mask  "
+          "(suspended / delisted / limit-hit / ST / new-listing)")
 
-    tradable_mask = _compute_tradable(df_price)   # Series[bool], MultiIndex (date, code)
+    list_date_series = (
+        df_industry["list_date"] if "list_date" in df_industry.columns
+        else pd.Series(dtype=str)
+    )
 
-    n_total       = len(tradable_mask)
-    n_tradable    = tradable_mask.sum()
-    n_suspended   = (df_price["vol"] == 0).sum()
-    n_delisted    = (df_price["close"].isna() | (df_price["close"] == 0)).sum()
-    _ok(f"Total stock-days  : {n_total:>10,}")
-    _ok(f"Tradable          : {n_tradable:>10,}  ({n_tradable / n_total * 100:.2f}%)")
-    _info(f"Suspended (vol=0) : {n_suspended:>10,}")
-    _info(f"Delisted  (px=0)  : {n_delisted:>10,}")
-    _info(f"Limit-hit         : {(n_total - n_tradable - n_suspended - n_delisted):>10,}  (approx)")
+    tradable_mask = _compute_tradable(df_price, df_st, list_date_series)
+
+    n_total     = len(tradable_mask)
+    n_tradable  = tradable_mask.sum()
+    n_suspended = (df_price["vol"] == 0).sum()
+    n_delisted  = (df_price["close"].isna() | (df_price["close"] == 0)).sum()
+
+    # Count ST-flagged stock-days (exclude sentinel rows start_date='99991231')
+    df_st_real = df_st[df_st["start_date"] != "99991231"].copy()
+    df_st_real["end_date"] = df_st_real["end_date"].fillna(config.END_DATE)
+    idx_flat = df_price.index.to_frame(index=False)
+    merged_st = idx_flat.merge(df_st_real, on="code", how="left")
+    n_st = (
+        (merged_st["date"] >= merged_st["start_date"])
+        & (merged_st["date"] <= merged_st["end_date"])
+    ).fillna(False).groupby([merged_st["date"], merged_st["code"]]).any().sum()
+
+    # Count IPO-flagged stock-days (same logic as _compute_tradable: use Series.dt.days)
+    price_dates = pd.to_datetime(df_price.index.get_level_values("date"))
+    list_dates = pd.to_datetime(
+        df_price.index.get_level_values("code").map(list_date_series),
+        errors="coerce",
+    )
+    tdiff = pd.Series(price_dates - list_dates, index=df_price.index)
+    n_ipo = int((tdiff.dt.days < 180).fillna(False).sum())
+
+    _ok(f"Total stock-days   : {n_total:>10,}")
+    _ok(f"Tradable           : {n_tradable:>10,}  ({n_tradable / n_total * 100:.2f}%)")
+    _info(f"Suspended (vol=0)  : {n_suspended:>10,}")
+    _info(f"Delisted  (px=0)   : {n_delisted:>10,}")
+    _info(f"ST status          : {int(n_st):>10,}")
+    _info(f"New listing <180d  : {n_ipo:>10,}")
+    _info(f"Limit-hit (approx) : {int(n_total - n_tradable - n_suspended - n_delisted):>10,}")
 
     # ----------------------------------------------------------------
     # Step 3: Compute raw alpha factors
@@ -252,19 +324,28 @@ def main() -> None:
     )
 
     # -- meta.parquet ---------------------------------------------------
-    # Daily fundamentals (pe, pb, total_mv) + static industry per stock.
-    industry_series = df_industry["industry"]          # Series indexed by code
-    df_meta = df_basic[["total_mv", "pe", "pb"]].copy()
+    # Extended daily fundamentals (all 15 fields) + static industry per stock.
+    _all_basic_cols = [
+        "turnover_rate", "turnover_rate_f", "volume_ratio",
+        "pe", "pe_ttm", "pb", "ps", "ps_ttm",
+        "dv_ratio", "dv_ttm",
+        "total_share", "float_share", "free_share",
+        "total_mv", "circ_mv",
+    ]
+    available_basic = [c for c in _all_basic_cols if c in df_basic.columns]
+    industry_series = df_industry["industry"]
+    df_meta = df_basic[available_basic].copy()
     df_meta["industry"] = (
         df_meta.index.get_level_values("code").map(industry_series)
     )
-    df_meta = df_meta[["total_mv", "industry", "pe", "pb"]]
+    # Place industry first for readability, then all fundamental columns
+    df_meta = df_meta[["industry"] + available_basic]
     meta_out  = _flatten(df_meta)
     meta_path = out_dir / "meta.parquet"
     meta_out.to_parquet(meta_path, index=False)
     _ok(
         f"meta.parquet          : {meta_out.shape[0]:>7,} rows  "
-        f"|  cols: {meta_out.columns.tolist()}"
+        f"|  cols ({len(meta_out.columns)}): {meta_out.columns.tolist()}"
     )
 
     # -- factors_raw.parquet --------------------------------------------

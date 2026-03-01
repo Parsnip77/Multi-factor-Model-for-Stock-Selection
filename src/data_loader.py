@@ -112,17 +112,54 @@ class DataEngine:
                 adj_factor  REAL,
                 PRIMARY KEY (code, date)
             );
+
+            CREATE TABLE IF NOT EXISTS stock_st (
+                code        TEXT  NOT NULL,
+                start_date  TEXT  NOT NULL,
+                end_date    TEXT
+            );
             """
         )
         conn.commit()
 
-        # Schema migration: add 'amount' column to daily_price if missing.
-        # SQLite does not support 'ADD COLUMN IF NOT EXISTS', so try/except is used.
+        # Schema migrations – SQLite does not support ADD COLUMN IF NOT EXISTS,
+        # so each migration is wrapped in try/except OperationalError.
+
+        # daily_price: add 'amount' column
         try:
             conn.execute("ALTER TABLE daily_price ADD COLUMN amount REAL")
             conn.commit()
         except sqlite3.OperationalError:
-            pass  # column already exists
+            pass
+
+        # stock_info: add 'list_date' column
+        try:
+            conn.execute("ALTER TABLE stock_info ADD COLUMN list_date TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+
+        # daily_basic: add 13 extended fundamental columns
+        _new_basic_cols = [
+            "turnover_rate REAL",
+            "turnover_rate_f REAL",
+            "volume_ratio REAL",
+            "pe_ttm REAL",
+            "ps REAL",
+            "ps_ttm REAL",
+            "dv_ratio REAL",
+            "dv_ttm REAL",
+            "total_share REAL",
+            "float_share REAL",
+            "free_share REAL",
+            "circ_mv REAL",
+        ]
+        for col_def in _new_basic_cols:
+            try:
+                conn.execute(f"ALTER TABLE daily_basic ADD COLUMN {col_def}")
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
 
         conn.close()
 
@@ -168,16 +205,18 @@ class DataEngine:
         """
         Download data for all universe constituents and persist to SQLite.
 
-        daily_price and adj_factor maintain independent cache sets:
-        a stock cached in daily_price but missing from adj_factor will have
-        its adj_factor fetched on the next run, and vice versa.
-        Delete stock_data.db to force a full re-download of everything.
+        Independent cache sets are maintained for daily_price, adj_factor, and
+        stock_st so that each can be supplemented on subsequent runs without
+        re-downloading the others.  Delete stock_data.db to force a full
+        re-download of everything.
 
         Steps:
             1. Fetch constituent list via index_weight.
-            2. Fetch stock metadata (name, industry) via stock_basic.
-            3. For each constituent: fetch daily OHLCV+amount and daily fundamentals.
+            2. Fetch stock metadata (name, industry, list_date) via stock_basic.
+            3. For each constituent: fetch daily OHLCV+amount and extended
+               daily fundamentals (15 fields).
             4. For each constituent: fetch adj_factor history.
+            5. For each constituent: fetch ST status history via stock_st.
         """
         codes = self._get_constituents()
         print(f"Universe: {len(codes)} stocks  [{config.UNIVERSE_INDEX}]")
@@ -185,10 +224,10 @@ class DataEngine:
 
         conn = sqlite3.connect(self.db_path)
 
-        # ---- Step 1: Stock metadata (industry classification) ----
-        print("Fetching stock metadata (name, industry)...")
+        # ---- Step 1: Stock metadata (name, industry, list_date) ----
+        print("Fetching stock metadata (name, industry, list_date)...")
         info_df = self.pro.stock_basic(
-            fields="ts_code,name,industry",
+            fields="ts_code,name,industry,list_date",
             list_status="L",
         )
         if info_df is not None and not info_df.empty:
@@ -198,7 +237,7 @@ class DataEngine:
             info_df.to_sql("stock_info", conn, if_exists="append", index=False)
             conn.commit()
 
-        # ---- Step 2: Daily price + fundamentals per stock ----
+        # ---- Step 2: Daily price + extended fundamentals per stock ----
         price_cached: set = set(
             pd.read_sql("SELECT DISTINCT code FROM daily_price", conn)[
                 "code"
@@ -206,6 +245,14 @@ class DataEngine:
         )
         n = len(codes)
         skipped_price = 0
+
+        _basic_fields = (
+            "ts_code,trade_date,"
+            "turnover_rate,turnover_rate_f,volume_ratio,"
+            "pe,pe_ttm,pb,ps,ps_ttm,"
+            "dv_ratio,dv_ttm,"
+            "total_share,float_share,free_share,total_mv,circ_mv"
+        )
 
         print("Downloading daily price + fundamentals...")
         for i, ts_code in enumerate(codes):
@@ -223,13 +270,13 @@ class DataEngine:
                     fields="ts_code,trade_date,open,high,low,close,vol,amount",
                 )
 
-                # Fundamentals (PE, PB, total market cap)
+                # Extended fundamentals (15 fields)
                 time.sleep(config.SLEEP_PER_CALL)
                 basic_df = self.pro.daily_basic(
                     ts_code=ts_code,
                     start_date=config.START_DATE,
                     end_date=config.END_DATE,
-                    fields="ts_code,trade_date,pe,pb,total_mv",
+                    fields=_basic_fields,
                 )
 
                 if price_df is not None and not price_df.empty:
@@ -291,10 +338,61 @@ class DataEngine:
                 print(f"  Adj progress: {i + 1 - skipped_adj} / {n}")
 
         conn.commit()
+        print(f"Adj done. Skipped (already cached): {skipped_adj}.")
+
+        # ---- Step 4: ST status history per stock (independent cache) ----
+        st_cached: set = set(
+            pd.read_sql("SELECT DISTINCT code FROM stock_st", conn)[
+                "code"
+            ].tolist()
+        )
+        skipped_st = 0
+
+        print("Downloading ST status history...")
+        for i, ts_code in enumerate(codes):
+            if ts_code in st_cached:
+                skipped_st += 1
+                continue
+
+            try:
+                time.sleep(config.SLEEP_PER_CALL)
+                st_df = self.pro.stock_st(ts_code=ts_code)
+
+                if st_df is not None and not st_df.empty:
+                    st_df = st_df.rename(columns={"ts_code": "code"})
+                    # Keep only relevant columns; end_date may be null for ongoing ST.
+                    # Drop rows with null start_date to satisfy NOT NULL constraint
+                    # (Tushare sometimes returns incomplete ST records).
+                    keep_cols = [c for c in ["code", "start_date", "end_date"] if c in st_df.columns]
+                    st_df = st_df.dropna(subset=["start_date"])
+                    if not st_df.empty:
+                        st_df[keep_cols].to_sql(
+                            "stock_st", conn, if_exists="append", index=False
+                        )
+                    else:
+                        # All rows had null start_date; mark as cached with no ST history.
+                        pd.DataFrame([{"code": ts_code, "start_date": "99991231", "end_date": "99991231"}]).to_sql(
+                            "stock_st", conn, if_exists="append", index=False
+                        )
+                else:
+                    # Insert a sentinel row so the stock is marked as cached
+                    # (no ST history = always tradable from ST perspective).
+                    pd.DataFrame([{"code": ts_code, "start_date": "99991231", "end_date": "99991231"}]).to_sql(
+                        "stock_st", conn, if_exists="append", index=False
+                    )
+
+            except Exception as exc:
+                print(f"  [WARN] stock_st {ts_code}: {exc}")
+
+            if (i + 1) % 50 == 0:
+                conn.commit()
+                print(f"  ST progress: {i + 1 - skipped_st} / {n}")
+
+        conn.commit()
         conn.close()
         print(
-            f"Done. Price skipped: {skipped_price}, adj skipped: {skipped_adj}. "
-            f"DB: {self.db_path}"
+            f"Done. Price skipped: {skipped_price}, adj skipped: {skipped_adj}, "
+            f"ST skipped: {skipped_st}.  DB: {self.db_path}"
         )
 
     def fetch_latest_adj_factor(self, codes: List[str]) -> pd.Series:
@@ -335,21 +433,32 @@ class DataEngine:
                 "df_price"    : DataFrame with MultiIndex (date, code),
                                 columns = [open, high, low, close, vol, amount]
                 "df_mv"       : DataFrame with MultiIndex (date, code),
-                                columns = [total_mv]
+                                columns = [total_mv]   (kept for backward compat)
+                "df_basic"    : DataFrame with MultiIndex (date, code),
+                                columns = [turnover_rate, turnover_rate_f,
+                                           volume_ratio, pe, pe_ttm, pb, ps,
+                                           ps_ttm, dv_ratio, dv_ttm,
+                                           total_share, float_share, free_share,
+                                           total_mv, circ_mv]
                 "df_industry" : DataFrame indexed by code,
-                                columns = [name, industry]
+                                columns = [name, industry, list_date]
                 "df_adj"      : DataFrame with MultiIndex (date, code),
                                 columns = [adj_factor]
+                "df_st"       : DataFrame with columns [code, start_date, end_date]
+                                (one row per ST status interval per stock;
+                                 end_date may be NULL for ongoing ST)
         """
         conn = sqlite3.connect(self.db_path)
 
         price_df = pd.read_sql("SELECT * FROM daily_price", conn)
         price_df = price_df.set_index(["date", "code"]).sort_index()
 
-        mv_df = pd.read_sql(
-            "SELECT code, date, total_mv FROM daily_basic", conn
-        )
-        mv_df = mv_df.set_index(["date", "code"]).sort_index()
+        # Full extended daily_basic (15 fundamental fields)
+        basic_df = pd.read_sql("SELECT * FROM daily_basic", conn)
+        basic_df = basic_df.set_index(["date", "code"]).sort_index()
+
+        # Backward-compatible df_mv (total market cap only)
+        mv_df = basic_df[["total_mv"]].copy()
 
         info_df = pd.read_sql(
             "SELECT * FROM stock_info", conn, index_col="code"
@@ -358,11 +467,15 @@ class DataEngine:
         adj_df = pd.read_sql("SELECT * FROM adj_factor", conn)
         adj_df = adj_df.set_index(["date", "code"]).sort_index()
 
+        st_df = pd.read_sql("SELECT code, start_date, end_date FROM stock_st", conn)
+
         conn.close()
 
         return {
             "df_price": price_df,
             "df_mv": mv_df,
+            "df_basic": basic_df,
             "df_industry": info_df,
             "df_adj": adj_df,
+            "df_st": st_df,
         }
