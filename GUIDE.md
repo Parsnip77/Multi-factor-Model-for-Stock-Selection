@@ -296,11 +296,10 @@
   | 步骤 | 操作 |
   |------|------|
   | 1 | 载入 `prices.parquet` 与 `factors_clean.parquet` |
-  | 2 | 调用 `calc_forward_return(prices_df, d=5)` 生成 target |
+  | 2 | 调用 `calc_forward_return(prices_df, d=1)` 生成 target |
   | 3 | 遍历每个 alpha 列，依次计算 IC 时间序列、IC metrics，输出图表与分层回测 |
-  | 4 | 筛选满足 `abs(IC mean) > IC_MEAN_THRESHOLD` 且 `abs(ICIR) > ICIR_THRESHOLD` 的因子，仅用于展示 |
-  | 5 | 以全部 15 个因子（`alpha_cols`）为自变量，对横截面 pct-rank 收益率做滚动 OLS；每截面先调用 `symmetric_orthogonalize` 消除共线性（可通过 `orthogonalize=False` 关闭），得到合成因子后接 `LayeredBacktester` 分层回测 |
-  | 6 | 以合成因子调用 `NetReturnBacktester` 进行含摩擦成本的净收益回测 |
+  | 4 | 筛选满足 `abs(IC mean) > IC_MEAN_THRESHOLD` 且 `abs(ICIR) > ICIR_THRESHOLD` 的因子 |
+  | 5 | 以全部有效因子（`effective_alphas`）为自变量，对横截面 pct-rank 收益率做滚动 OLS；每截面先调用 `symmetric_orthogonalize` 消除共线性（可通过 `orthogonalize=False` 关闭），得到合成因子后接 `LayeredBacktester` 分层回测 |
 
 - **使用**：
   ```bash
@@ -311,9 +310,9 @@
 
   | 变量 | 默认值 | 说明 |
   |------|--------|------|
-  | `FORWARD_DAYS` | `5` | 未来收益率天数 |
-  | `IC_MEAN_THRESHOLD` | `0.015` | IC 均值绝对值阈值（仅用于展示筛选，不影响 OLS 因子集） |
-  | `ICIR_THRESHOLD` | `0.20` | ICIR 绝对值阈值（同上） |
+  | `FORWARD_DAYS` | `1` | 未来收益率天数 |
+  | `IC_MEAN_THRESHOLD` | `0.02` | IC 均值绝对值阈值（仅用于展示筛选，不影响 OLS 因子集） |
+  | `ICIR_THRESHOLD` | `0.30` | ICIR 绝对值阈值（同上） |
   | `SHOW_PLOTS` | `False` | 是否交互展示 IC 图表 |
   | `COMBINE_WINDOW` | `3` | 滚动 OLS 训练窗口天数 |
 
@@ -331,7 +330,7 @@
   | `run_backtest()` | 执行完整 5 步回测，返回绩效指标 DataFrame |
   | `plot(show=True)` | 绘制 G1..GN + L-S 累计净值折线图，保存至 `plots_dir` |
 
-  **`forward_days` 参数说明**：持仓天数，与 `calc_forward_return` 中的 `d` 保持一致（默认 5）。当 `forward_days > 1` 时，每行 `group_ret` 为 d 日累积收益；模块内部自动执行 `group_ret / forward_days`，将其近似为日收益后再复利，从而避免将 d 日收益当作 1 日收益连续复利导致的收益虚高。该近似基于滑动窗口的性质：`sum_T [R_d(T)/d] ≈ sum_t r_t`（大样本 N>>d 时误差可忽略）。精确的净收益回测请使用 `NetReturnBacktester`。
+  **`forward_days` 参数说明**：持仓天数，与 `calc_forward_return` 中的 `d` 保持一致（默认 5）。当 `forward_days > 1` 时，每行 `group_ret` 为 d 日累积收益；模块内部自动执行 `group_ret / forward_days`，将其近似为日收益后再复利，从而避免将 d 日收益当作 1 日收益连续复利导致的收益虚高。该近似基于滑动窗口的性质：`sum_T [R_d(T)/d] ≈ sum_t r_t`（大样本 N>>d 时误差可忽略）。
 
 - **5 步回测逻辑**：
 
@@ -426,51 +425,7 @@
 
 ---
 
-### 13. src/net_backtester.py
-
-- **用途**：纯多头、考虑摩擦成本的回测模块，模拟实盘中重叠投资组合（Overlapping Portfolio）策略的实际净收益表现，封装为 `NetReturnBacktester` 类。
-
-- **重叠组合逻辑**：
-  - 每天选出当日 top 20% 股票（等权 `daily_w`）
-  - 将资金分为 `d` 个 bucket，当日权重 = 过去 d 天 `daily_w` 的滚动均值（`overlap_w`）
-  - 毛收益：`GrossRet_T = overlap_w_{T-1} · R_T`
-  - 换手率：`Turnover_T = 0.5 × ||overlap_w_T - overlap_w_{T-1}||₁`
-  - 净收益：`NetRet_T = GrossRet_T - Turnover_T × cost_rate`
-  - 前 d 天滚动窗口不完整，自动裁剪
-
-- **类接口**：
-
-  | 方法 | 说明 |
-  |------|------|
-  | `__init__(alpha_df, prices_df, forward_days, cost_rate=0.002, rf=0.03, plots_dir=None)` | 接收合成因子和价格表，延迟计算 |
-  | `run_backtest()` | 执行回测，返回 `pd.Series` 绩效指标 |
-  | `plot(show=False)` | 绘制累计净值曲线，保存至 `plots_dir` |
-
-- **7 个绩效指标**：
-
-  | 指标 | 公式 |
-  |------|------|
-  | Cum Return | `(1+net_ret).cumprod().iloc[-1] - 1` |
-  | Ann Return | `(1+cum_ret)^(252/N) - 1` |
-  | Ann Vol | `net_ret.std() × √252` |
-  | Sharpe | `(ann_ret - rf) / ann_vol` |
-  | Max DD | `min(cumval / cumval.cummax() - 1)` |
-  | Avg Daily Turnover | `mean(Turnover_T)` |
-  | Breakeven Turnover | `(ann_gross_ret - rf) / (cost_rate × 252)`，即在当前毛收益下可承受的最大日换手率 |
-
-- **使用示例**：
-  ```python
-  from net_backtester import NetReturnBacktester
-  
-  nb = NetReturnBacktester(synth_df, prices_df, forward_days=5,
-                           cost_rate=0.002, plots_dir=pathlib.Path("plots"))
-  print(nb.run_backtest())  # pd.Series: Ann Return, Sharpe, Breakeven Turnover ...
-  nb.plot()                 # 保存至 plots/synthetic_factor_net.png
-  ```
-
----
-
-### 14. data/stock_data.db
+### 13. data/stock_data.db
 
 - **用途**：本地 SQLite 数据库，存储**五张表**：`daily_price`、`daily_basic`、`stock_info`、`adj_factor`、`stock_st`。
 - **生成方式**：由 `DataEngine.init_db()` + `download_data()` 自动生成，无需手动创建。
@@ -479,7 +434,7 @@
 
 ---
 
-### 15. src/ml_data_prep.py
+### 14. src/ml_data_prep.py
 
 - **用途**：第三阶段 ML 数据切分模块，实现滚动时序交叉验证，防止训练集获取未来数据，封装为 `WalkForwardSplitter` 类。
 
@@ -505,7 +460,7 @@
 
 ---
 
-### 16. src/lgbm_model.py
+### 15. src/lgbm_model.py
 
 - **用途**：第三阶段 LightGBM 训练引擎，使用量化实战防过拟合超参数配置，封装为 `AlphaLGBM` 类。同时集成特征重要性可视化与 SHAP 归因分析，无需独立 `feature_importance.py`。
 
@@ -543,9 +498,9 @@
 
 ---
 
-### 17. ml_analyze_main.py
+### 16. ml_analyze_main.py
 
-- **用途**：第三阶段端到端总脚本，串联数据加载 → 特征合并 → 滚动训练 → 双回测器 → 图表与报告输出。
+- **用途**：第三阶段端到端总脚本，串联数据加载 → 特征合并 → 滚动训练 → 回测 → 图表与报告输出。
 
 - **执行流程**：
 
@@ -559,10 +514,9 @@
   | 6 | 拼接所有 Fold 预测；对每只股票按 3 日滚动均值平滑，降低换手率 |
   | 7 | IC 分析（`calc_ic` / `calc_ic_metrics` / `plot_ic`），输出 IC Mean、IC Std、ICIR，保存 IC 图（`plots/ml_alpha_ic.png`） |
   | 8 | 调用 `LayeredBacktester`，生成分层净值图（`plots/ml_alpha_layered.png`） |
-  | 9 | 调用 `NetReturnBacktester`，生成净收益图（`plots/ml_alpha_net.png`） |
-  | 10 | 跨折平均特征重要性条形图（`plots/feature_importance.png`） |
-  | 11 | SHAP beeswarm 图（最后一折测试集采样，`plots/shap_beeswarm.png`） |
-  | 12 | 输出文字报告至 `result_ml.txt` |
+  | 9 | 跨折平均特征重要性条形图（`plots/feature_importance.png`） |
+  | 10 | SHAP beeswarm 图（最后一折测试集采样，`plots/shap_beeswarm.png`） |
+  | 11 | 输出文字报告至 `result_ml.txt` |
 
 - **可调配置**（脚本顶部常量）：
 

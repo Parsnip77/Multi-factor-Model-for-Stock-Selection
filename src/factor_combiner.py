@@ -9,8 +9,9 @@ a rolling OLS regression:
     Y_{t} = beta_1 * X_1_{t} + ... + beta_k * X_k_{t}
 
 where Y is the forward return (or its cross-sectional rank) and X_i are
-the individual factor values.  For each prediction date T, the model is
-trained on [T-window, T-1] and used to score stocks on date T.  The
+the individual factor values.  For each prediction date T and forward
+horizon d, the model is trained on [T-d-window, T-d] and used to score
+stocks on date T.  The
 resulting cross-sectional scores are z-score normalised within each date.
 
 Optionally, each cross-section's factor matrix is symmetrically
@@ -75,6 +76,7 @@ def rolling_linear_combine(
     factor_cols: List[str],
     window: int = 60,
     orthogonalize: bool = True,
+    forward_days: int = 1,
 ) -> pd.DataFrame:
     """Synthesise a composite factor via a rolling OLS regression.
 
@@ -95,6 +97,10 @@ def rolling_linear_combine(
         cross-sectional factor matrix before the OLS step.  This removes
         inter-factor collinearity and stabilises regression coefficients.
         Set to False to use the raw factor matrix without transformation.
+    forward_days : int
+        Forward return horizon d used in the label construction
+        (e.g. 5-day forward return).  The training window for date T is
+        shifted back by d days to avoid look-ahead bias: [T-d-window, T-d].
 
     Returns
     -------
@@ -123,10 +129,10 @@ def rolling_linear_combine(
     sorted_dates = sorted(merged["trade_date"].unique())
     n_dates = len(sorted_dates)
 
-    if window >= n_dates:
+    if window + forward_days >= n_dates:
         raise ValueError(
-            f"window ({window}) must be smaller than the number of available dates "
-            f"({n_dates})."
+            f"window ({window}) + forward_days ({forward_days}) must be smaller than the "
+            f"number of available dates ({n_dates})."
         )
 
     # Pre-index rows by date for fast slicing
@@ -134,9 +140,9 @@ def rolling_linear_combine(
 
     records: list[dict] = []
 
-    for i in range(window, n_dates):
+    for i in range(window + forward_days, n_dates):
         pred_date = sorted_dates[i]
-        train_dates = sorted_dates[i - window: i]
+        train_dates = sorted_dates[i - forward_days - window: i - forward_days]
 
         # Build training matrix (optionally orthogonalize each cross-section)
         train_frames = [date_to_rows[d] for d in train_dates]

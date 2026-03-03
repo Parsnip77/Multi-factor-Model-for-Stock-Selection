@@ -13,10 +13,9 @@ Workflow
 6.  Concatenate all fold predictions; apply 3-day rolling-mean smoothing.
 7.  IC analysis of the ML synthetic factor (IC series, metrics, IC chart).
 8.  Backtest with LayeredBacktester  → layered NAV chart + performance table.
-9.  Backtest with NetReturnBacktester → net-return NAV chart + metrics.
-10. Plot average feature importance across folds.
-11. Plot SHAP beeswarm on last-fold test sample.
-12. Write text summary to ``result_ml.txt``.
+9. Plot average feature importance across folds.
+10. Plot SHAP beeswarm on last-fold test sample.
+11. Write text summary to ``result_ml.txt``.
 
 Usage
 -----
@@ -43,7 +42,6 @@ sys.path.insert(0, str(pathlib.Path(__file__).parent / "src"))
 from targets import calc_forward_return
 from ic_analyzer import calc_ic, calc_ic_metrics, plot_ic
 from backtester import LayeredBacktester
-from net_backtester import NetReturnBacktester
 from ml_data_prep import WalkForwardSplitter
 from lgbm_model import AlphaLGBM
 
@@ -293,25 +291,6 @@ def main() -> None:
 
     _print("\nLayered Backtest Performance:\n", report_buf)
     _print(perf_table.to_string(), report_buf)
-
-    # -----------------------------------------------------------------------
-    # 8. Net return backtest
-    # -----------------------------------------------------------------------
-    _section("Net Return Backtest (NetReturnBacktester)", report_buf)
-
-    nb = NetReturnBacktester(
-        final_alpha_df,
-        prices_df,
-        forward_days=FORWARD_DAYS,
-        cost_rate=0.002,
-        rf=0.03,
-        plots_dir=PLOTS_DIR,
-    )
-    net_summary = nb.run_backtest()
-    nb.plot(show=False)
-
-    _print("\nNet Return Backtest Summary:\n", report_buf)
-    _print(net_summary.to_string(), report_buf)
 
     # -----------------------------------------------------------------------
     # 9. Average feature importance across folds

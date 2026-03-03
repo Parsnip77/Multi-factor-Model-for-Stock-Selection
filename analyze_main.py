@@ -25,16 +25,15 @@ from targets import calc_forward_return
 from ic_analyzer import calc_ic, calc_ic_metrics, plot_ic
 from backtester import LayeredBacktester
 from factor_combiner import rolling_linear_combine
-from net_backtester import NetReturnBacktester
 
 # -----------------------------------------------------------------------
 # Configuration
 # -----------------------------------------------------------------------
 DATA_DIR  = ROOT / "data"
 PLOTS_DIR = ROOT / "plots"
-FORWARD_DAYS = 5          # d-day forward return
-IC_MEAN_THRESHOLD = 0.015  # minimum |IC mean| to keep a factor
-ICIR_THRESHOLD = 0.20      # minimum |ICIR| to keep a factor
+FORWARD_DAYS = 1          # d-day forward return
+IC_MEAN_THRESHOLD = 0.02  # minimum |IC mean| to keep a factor
+ICIR_THRESHOLD = 0.30      # minimum |ICIR| to keep a factor
 SHOW_PLOTS = False        # set False to suppress interactive charts
 COMBINE_WINDOW = 3        # rolling OLS training window (trading days)
 
@@ -81,7 +80,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 1: Load Parquet files
     # ------------------------------------------------------------------
-    _step("Step 1 / 6  —  Loading Parquet files")
+    _step("Step 1 / 5  —  Loading Parquet files")
 
     prices_path  = DATA_DIR / "prices.parquet"
     factors_path = DATA_DIR / "factors_clean.parquet"
@@ -102,7 +101,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 2: Compute forward returns
     # ------------------------------------------------------------------
-    _step(f"Step 2 / 6  —  Computing {FORWARD_DAYS}-day forward return")
+    _step(f"Step 2 / 5  —  Computing {FORWARD_DAYS}-day forward return")
 
     target_df = calc_forward_return(prices_df, d=FORWARD_DAYS)
     valid_count = target_df["forward_return"].notna().sum()
@@ -112,7 +111,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 3: Single-factor IC analysis
     # ------------------------------------------------------------------
-    _step("Step 3 / 6  —  Single-factor IC analysis")
+    _step("Step 3 / 5  —  Single-factor IC analysis")
 
     PLOTS_DIR.mkdir(exist_ok=True)
     alpha_cols = [c for c in factors_df.columns if c not in ("trade_date", "ts_code")]
@@ -161,7 +160,7 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 4: Report effective alphas
     # ------------------------------------------------------------------
-    _step("Step 4 / 6  —  Results summary")
+    _step("Step 4 / 5  —  Results summary")
 
     if effective_alphas:
         _ok(f"Effective alphas ({len(effective_alphas)} / {len(alpha_cols)}):")
@@ -174,10 +173,10 @@ def main() -> None:
     # ------------------------------------------------------------------
     # Step 5: Synthetic factor via rolling OLS combination
     # ------------------------------------------------------------------
-    _step("Step 5 / 6  —  Synthetic factor (rolling OLS + symmetric orthogonalization)")
+    _step("Step 5 / 5  —  Synthetic factor")
 
-    _info(f"Effective alphas (IC/ICIR screen, for reference): {effective_alphas}")
-    _info(f"Using ALL {len(alpha_cols)} factors for OLS combination: {alpha_cols}")
+    _info(f"Effective alphas: {effective_alphas}")
+    #_info(f"Using ALL factors for OLS combination")
     _info(f"Rolling window = {COMBINE_WINDOW} trading days  |  orthogonalize = True")
 
     # Use cross-sectional percentile rank of forward_return as the OLS
@@ -192,14 +191,26 @@ def main() -> None:
     _info("  OLS target: cross-sectional pct-rank of forward_return (per trade_date)")
 
     synth_df = rolling_linear_combine(
-        factors_df,
+        factors_df[['trade_date', 'ts_code', *effective_alphas]],
         target_cs_rank,
-        factor_cols=alpha_cols,
+        factor_cols=effective_alphas,
         window=COMBINE_WINDOW,
         orthogonalize=True,
+        forward_days=FORWARD_DAYS,
     )
     _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
         f"(dates: {synth_df['trade_date'].nunique()})")
+
+    ic_series = calc_ic(synth_df, target_df)
+
+    metrics = calc_ic_metrics(ic_series)
+    _info(f"  IC Mean : {metrics['ic_mean']:>+.4f}")
+    _info(f"  IC Std  : {metrics['ic_std']:>.4f}")
+    _info(f"  ICIR    : {metrics['icir']:>+.4f}")
+
+    save_path = PLOTS_DIR / f"synthetic_factor_ic.png"
+    plot_ic(ic_series, factor_name="synthetic_factor", show=SHOW_PLOTS, save_path=save_path)
+    _info(f"  IC chart saved.")
 
     bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
     perf_synth = bt_synth.run_backtest()
@@ -207,25 +218,6 @@ def main() -> None:
     _p(perf_synth.to_string())
     bt_synth.plot(show=SHOW_PLOTS)
     _info("  Synthetic backtest plot saved.")
-
-    # ------------------------------------------------------------------
-    # Step 6: Net-return backtest with transaction costs
-    # ------------------------------------------------------------------
-    _step("Step 6 / 6  —  Net-return backtest (with transaction costs)")
-
-    _info(f"cost_rate = {0.002:.2%}  |  forward_days = {FORWARD_DAYS}  |  top 20%")
-    nb = NetReturnBacktester(
-        synth_df,
-        prices_df,
-        forward_days=FORWARD_DAYS,
-        cost_rate=0.002,
-        plots_dir=PLOTS_DIR,
-    )
-    net_summary = nb.run_backtest()
-    _info("  Net-return performance summary:")
-    _p(net_summary.to_string())
-    nb.plot(show=SHOW_PLOTS)
-    _info("  Net-return chart saved.")
 
     _p(f"\n{'=' * 62}")
     _p("  Phase 2 factor analysis complete.")

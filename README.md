@@ -8,11 +8,11 @@
 
 第一阶段用 Tushare Pro 拉取沪深300成分股的日线行情与基本面指标，写入本地 SQLite 数据库；在此基础上复现《101 Formulaic Alphas》中的经典因子；再通过预处理模块对原始因子执行去极值、标准化、中性化，最终由 `data_preparation_main.py` 串联全流程，将四张核对齐的宽表导出为 Parquet 文件。
 
-**第二阶段：因子评估层 + 分层回测 + 线性回归合成因子 + 扣费净收益回测**
+**第二阶段：因子评估层 + 分层回测 + 线性回归合成因子**
 
-第二阶段对每个因子进行 IC 评估，计算其信息系数均值和信息比率，绘制 IC 时间序列图和数值累计图，并据此进行有效因子筛选。针对每个单因子进行分层回测，绘制 G1 ～ G5 分组收益曲线及 G5-G1 多空收益曲线，给出累计收益率、年化收益率、年化波动率、夏普比率、最大回撤五个指标。最后，使用滚动窗口线性回归的方式尝试对多因子进行简单线性合成，并进行计算 0.2% 双边交易费用的实盘扣费回测，同时额外给出日均换手率和盈亏平衡换手率指标。总脚本由`analyze_main.py`执行，报告写入`result.txt`。
+第二阶段对每个因子进行 IC 评估，计算其信息系数均值和信息比率，绘制 IC 时间序列图和数值累计图，并据此进行有效因子筛选。针对每个单因子进行分层回测，绘制 G1 ～ G5 分组收益曲线及 G5-G1 多空收益曲线，给出累计收益率、年化收益率、年化波动率、夏普比率、最大回撤五个指标。最后，使用滚动窗口线性回归的方式尝试对多因子进行简单线性合成，给出合成因子的 IC 分析和回测数据。总脚本由`analyze_main.py`执行，报告写入`result.txt`。
 
-**第三阶段：ML 合成因子层 + 分层回测和净收益回测**  
+**第三阶段：ML 合成因子层 + 分层回测**  
 
 第三阶段接入 LightGBM，以 15 个 alpha 为特征，24 个月训练 + 6 个月验证 + 6 个月测试进行滚动时间切分，训练合成一个 ML Alpha，并调用分层回测与净收益回测。最终给出回测指标数据报告、特征重要性参考和 SHAP 分析 beeswarm 图。总脚本由`ml_analyze_main.py`执行，报告写入`result_ml.txt`。
 
@@ -20,11 +20,11 @@
 
 项目成果简要展示：
 
-1. 第二阶段合成因子分层回测收益曲线和扣费净收益曲线（详细数据指标见 result.txt）
+1. 第二阶段合成因子IC分析图和分层回测收益曲线（详细数据指标见 result.txt）
 
 ![synthetic_factor_backtest](./plots/synthetic_factor_backtest.png)
 
-![synthetic_factor_net](./plots/synthetic_factor_net.png)
+![synthetic_factor_ic](./plots/synthetic_factor_ic.png)
 
 2. 第二阶段合成因子IC分析图、分层回测收益曲线和 SHAP beeswarm 图（详细数据指标见 result_ml.txt）
 
@@ -57,7 +57,6 @@
 │   ├── ic_analyzer.py          # calc_ic / calc_ic_metrics / plot_ic：因子 IC 评估
 │   ├── backtester.py           # LayeredBacktester：分层回测（分组、绩效指标、累计净值图）
 │   ├── factor_combiner.py      # symmetric_orthogonalize + rolling_linear_combine：对称正交化 + 滚动 OLS 
-│   ├── net_backtester.py       # NetReturnBacktester：考虑摩擦成本的纯多头重叠组合回测
 │   ├── ml_data_prep.py         # WalkForwardSplitter：量化专用时序滚动切分器
 │   └── lgbm_model.py           # AlphaLGBM：LightGBM 训练引擎 + 特征重要性 + SHAP
 ├── notebooks/
@@ -70,7 +69,7 @@
 ├── requirements.txt            # Python 依赖列表
 ├── result.txt                  # analyze_main.py 自动生成的因子 summary
 ├── result_ml.txt               # ml_analyze_main.py 自动生成的 ML 合成因子报告
-└── README.md              			# 本说明文档
+└── README.md              	    # 本说明文档
 ```
 
 | 文件/目录 | 用途 |
@@ -84,7 +83,6 @@
 | `src/ic_analyzer.py` | `calc_ic` / `calc_ic_metrics` / `plot_ic`：截面 Spearman IC 评估 |
 | `src/backtester.py` | `LayeredBacktester`：分层回测，含绩效指标计算与累计净值绘图 |
 | `src/factor_combiner.py` | `symmetric_orthogonalize`（Löwdin 正交化）+ `rolling_linear_combine`（含正交化开关的滚动 OLS 合成因子） |
-| `src/net_backtester.py` | `NetReturnBacktester`：纯多头重叠组合回测，含摩擦成本、换手率、盈亏平衡换手率 |
 | `src/ml_data_prep.py` | `WalkForwardSplitter`：量化专用时序滚动切分器，防止未来函数数据泄露 |
 | `src/lgbm_model.py` | `AlphaLGBM`：LightGBM 训练引擎，集成特征重要性绘图与 SHAP 分析 |
 | `data_preparation_main.py` | 第一阶段总脚本：串联 DataEngine → Alpha101 → FactorCleaner，导出四张 Parquet |
@@ -126,6 +124,7 @@ python data_preparation_main.py
 
 # 5. 运行第二阶段总脚本（因子 IC 评估 + 有效因子筛选 + 单因子分层回测 + 滚动线性回归合成 + 净收益回测）
 python analyze_main.py
+# 报告输出至 result.txt，图表保存至 plots/
 
 # 6. 运行第三阶段总脚本（LightGBM 合成因子 + 双回测 + 报告）
 python ml_analyze_main.py
