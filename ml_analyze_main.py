@@ -245,7 +245,7 @@ def main() -> None:
     ).reset_index(drop=True)
     final_alpha_df["ml_alpha"] = (
         final_alpha_df.groupby("ts_code")["ml_alpha"]
-        .transform(lambda s: s.rolling(window=3, min_periods=3).mean())
+        .transform(lambda s: s.rolling(window=1, min_periods=1).mean())
     )
     final_alpha_df = final_alpha_df.dropna(subset=["ml_alpha"]).reset_index(drop=True)
 

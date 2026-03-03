@@ -511,12 +511,11 @@
   | 3 | 按 `(trade_date, ts_code)` 内联合并因子与 target，dropna；对 `forward_return` 做截面百分位排名（`cs_rank_return`）作为训练目标 |
   | 4 | 初始化 `WalkForwardSplitter`（默认：train=24m, val=6m, test=6m, embargo=1d） |
   | 5 | 循环各 Fold：以 `cs_rank_return` 为目标训练 `AlphaLGBM`，预测测试集，记录预测结果与特征重要性 |
-  | 6 | 拼接所有 Fold 预测；对每只股票按 3 日滚动均值平滑，降低换手率 |
-  | 7 | IC 分析（`calc_ic` / `calc_ic_metrics` / `plot_ic`），输出 IC Mean、IC Std、ICIR，保存 IC 图（`plots/ml_alpha_ic.png`） |
-  | 8 | 调用 `LayeredBacktester`，生成分层净值图（`plots/ml_alpha_layered.png`） |
-  | 9 | 跨折平均特征重要性条形图（`plots/feature_importance.png`） |
-  | 10 | SHAP beeswarm 图（最后一折测试集采样，`plots/shap_beeswarm.png`） |
-  | 11 | 输出文字报告至 `result_ml.txt` |
+  | 6 | IC 分析（`calc_ic` / `calc_ic_metrics` / `plot_ic`），输出 IC Mean、IC Std、ICIR，保存 IC 图（`plots/ml_alpha_ic.png`） |
+  | 7 | 调用 `LayeredBacktester`，生成分层净值图（`plots/ml_alpha_layered.png`） |
+  | 8 | 跨折平均特征重要性条形图（`plots/feature_importance.png`） |
+  | 9 | SHAP beeswarm 图（最后一折测试集采样，`plots/shap_beeswarm.png`） |
+  | 10 | 输出文字报告至 `result_ml.txt` |
 
 - **可调配置**（脚本顶部常量）：
 
@@ -538,7 +537,7 @@
   | `plots/ml_alpha_net.png` | 净收益回测累计净值图 |
   | `plots/feature_importance.png` | 15 个因子的跨折平均特征重要性（gain）条形图 |
   | `plots/shap_beeswarm.png` | SHAP 蜂群图（特征贡献方向与大小） |
-  | `result_ml.txt` | 完整文字报告：各折信息 + IC 指标 + 分层绩效表 + 净收益绩效指标 + 特征重要性排名 |
+  | `result_ml.txt` | 完整文字报告：各折信息 + IC 指标 + 分层绩效表 + 特征重要性排名 |
 
 - **使用**：
   ```bash
