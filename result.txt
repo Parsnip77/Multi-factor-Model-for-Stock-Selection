@@ -279,9 +279,9 @@ L-S     -0.6170     -0.1807   0.1039 -2.0284 -0.6419
       * alpha101
 
 ==============================================================
-  Step 5 / 5  —  Synthetic factor (rolling OLS + symmetric orthogonalization)
+  Step 5 / 5  —  Synthetic factor
 ==============================================================
-  [  ]  Effective alphas (IC/ICIR screen, for reference): ['alpha038', 'alpha042', 'alpha054', 'alpha101']
+  [  ]  Effective alphas: ['alpha038', 'alpha042', 'alpha054', 'alpha101']
   [  ]  Rolling window = 3 trading days  |  orthogonalize = True
   [  ]    OLS target: cross-sectional pct-rank of forward_return (per trade_date)
   [OK]  Synthetic factor : 356,919 rows  (dates: 1209)

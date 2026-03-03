@@ -26,6 +26,8 @@ def calc_forward_return(prices_df: pd.DataFrame, d: int) -> pd.DataFrame:
     """
     close_wide = prices_df.pivot(index="trade_date", columns="ts_code", values="close")
 
+    # open_wide = prices_df.pivot(index="trade_date", columns="ts_code", values="open")
+
     # shift(-d) brings future price back to current index position
     fwd_wide = close_wide.shift(-d) / close_wide - 1
 

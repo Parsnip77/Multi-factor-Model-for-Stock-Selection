@@ -175,49 +175,52 @@ def main() -> None:
     # ------------------------------------------------------------------
     _step("Step 5 / 5  —  Synthetic factor")
 
-    _info(f"Effective alphas: {effective_alphas}")
-    #_info(f"Using ALL factors for OLS combination")
-    _info(f"Rolling window = {COMBINE_WINDOW} trading days  |  orthogonalize = True")
+    if len(effective_alphas) == 0:
+        _info("No effective alphas found. Rolling OLS skipped.")
+    else:
+        _info(f"Effective alphas: {effective_alphas}")
+        #_info(f"Using ALL factors for OLS combination")
+        _info(f"Rolling window = {COMBINE_WINDOW} trading days  |  orthogonalize = True")
 
-    # Use cross-sectional percentile rank of forward_return as the OLS
-    # regression target.  This removes the market-wide daily move (beta)
-    # from the label, so the model learns relative stock selection ability
-    # rather than fitting to the overall market direction.
-    target_flat = target_df.reset_index()[["trade_date", "ts_code", "forward_return"]]
-    target_cs_rank = target_flat.copy()
-    target_cs_rank["forward_return"] = target_cs_rank.groupby("trade_date")[
-        "forward_return"
-    ].rank(pct=True)
-    _info("  OLS target: cross-sectional pct-rank of forward_return (per trade_date)")
+        # Use cross-sectional percentile rank of forward_return as the OLS
+        # regression target.  This removes the market-wide daily move (beta)
+        # from the label, so the model learns relative stock selection ability
+        # rather than fitting to the overall market direction.
+        target_flat = target_df.reset_index()[["trade_date", "ts_code", "forward_return"]]
+        target_cs_rank = target_flat.copy()
+        target_cs_rank["forward_return"] = target_cs_rank.groupby("trade_date")[
+            "forward_return"
+        ].rank(pct=True)
+        _info("  OLS target: cross-sectional pct-rank of forward_return (per trade_date)")
 
-    synth_df = rolling_linear_combine(
-        factors_df[['trade_date', 'ts_code', *effective_alphas]],
-        target_cs_rank,
-        factor_cols=effective_alphas,
-        window=COMBINE_WINDOW,
-        orthogonalize=True,
-        forward_days=FORWARD_DAYS,
-    )
-    _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
-        f"(dates: {synth_df['trade_date'].nunique()})")
+        synth_df = rolling_linear_combine(
+            factors_df[['trade_date', 'ts_code', *effective_alphas]],
+            target_cs_rank,
+            factor_cols=effective_alphas,
+            window=COMBINE_WINDOW,
+            orthogonalize=True,
+            forward_days=FORWARD_DAYS,
+        )
+        _ok(f"Synthetic factor : {synth_df.shape[0]:>7,} rows  "
+            f"(dates: {synth_df['trade_date'].nunique()})")
 
-    ic_series = calc_ic(synth_df, target_df)
+        ic_series = calc_ic(synth_df, target_df)
 
-    metrics = calc_ic_metrics(ic_series)
-    _info(f"  IC Mean : {metrics['ic_mean']:>+.4f}")
-    _info(f"  IC Std  : {metrics['ic_std']:>.4f}")
-    _info(f"  ICIR    : {metrics['icir']:>+.4f}")
+        metrics = calc_ic_metrics(ic_series)
+        _info(f"  IC Mean : {metrics['ic_mean']:>+.4f}")
+        _info(f"  IC Std  : {metrics['ic_std']:>.4f}")
+        _info(f"  ICIR    : {metrics['icir']:>+.4f}")
 
-    save_path = PLOTS_DIR / f"synthetic_factor_ic.png"
-    plot_ic(ic_series, factor_name="synthetic_factor", show=SHOW_PLOTS, save_path=save_path)
-    _info(f"  IC chart saved.")
+        save_path = PLOTS_DIR / f"synthetic_factor_ic.png"
+        plot_ic(ic_series, factor_name="synthetic_factor", show=SHOW_PLOTS, save_path=save_path)
+        _info(f"  IC chart saved.")
 
-    bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
-    perf_synth = bt_synth.run_backtest()
-    _info("  Backtest metrics (synthetic factor):")
-    _p(perf_synth.to_string())
-    bt_synth.plot(show=SHOW_PLOTS)
-    _info("  Synthetic backtest plot saved.")
+        bt_synth = LayeredBacktester(synth_df, target_df, forward_days=FORWARD_DAYS, plots_dir=PLOTS_DIR)
+        perf_synth = bt_synth.run_backtest()
+        _info("  Backtest metrics (synthetic factor):")
+        _p(perf_synth.to_string())
+        bt_synth.plot(show=SHOW_PLOTS)
+        _info("  Synthetic backtest plot saved.")
 
     _p(f"\n{'=' * 62}")
     _p("  Phase 2 factor analysis complete.")
