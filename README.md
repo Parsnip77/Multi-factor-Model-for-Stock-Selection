@@ -22,9 +22,9 @@
 
 1. 第二阶段合成因子IC分析图和分层回测收益曲线（详细数据指标见 result.txt）
 
-![synthetic_factor_backtest](./plots/synthetic_factor_backtest.png)
-
 ![synthetic_factor_ic](./plots/synthetic_factor_ic.png)
+
+![synthetic_factor_backtest](./plots/synthetic_factor_backtest.png)
 
 2. 第二阶段合成因子IC分析图、分层回测收益曲线和 SHAP beeswarm 图（详细数据指标见 result_ml.txt）
 
