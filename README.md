@@ -98,7 +98,7 @@
 
 ## 三、各文件使用说明
 
-详见`GUIDE.md`
+详见 [GUIDE.md](./GUIDE.md)。
 
 ---
 
