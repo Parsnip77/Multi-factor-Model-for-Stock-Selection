@@ -14,7 +14,7 @@
 
 **第三阶段：ML 合成因子层 + 分层回测**  
 
-第三阶段接入 LightGBM，以 15 个 alpha 为特征，24 个月训练 + 6 个月验证 + 6 个月测试进行滚动时间切分，训练合成一个 ML Alpha，并调用分层回测与净收益回测。最终给出回测指标数据报告、特征重要性参考和 SHAP 分析 beeswarm 图。总脚本由`ml_analyze_main.py`执行，报告写入`result_ml.txt`。
+第三阶段接入 LightGBM，以 15 个 alpha 为特征，24 个月训练 + 6 个月验证 + 6 个月测试进行滚动时间切分，训练合成一个 ML Alpha，并调用分层回测模块。最终给出回测指标数据报告、特征重要性参考和 SHAP 分析 beeswarm 图。总脚本由`ml_analyze_main.py`执行，报告写入`result_ml.txt`。
 
 ----
 
@@ -26,7 +26,7 @@
 
 ![synthetic_factor_backtest](./plots/synthetic_factor_backtest.png)
 
-2. 第二阶段合成因子IC分析图、分层回测收益曲线和 SHAP beeswarm 图（详细数据指标见 result_ml.txt）
+2. 第三阶段合成因子IC分析图、分层回测收益曲线和 SHAP beeswarm 图（详细数据指标见 result_ml.txt）
 
 ![ml_alpha_ic](./plots/ml_alpha_ic.png)
 
