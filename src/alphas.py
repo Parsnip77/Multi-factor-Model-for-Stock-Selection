@@ -375,6 +375,7 @@ class Alpha101:
         """
         return self._rank(self.vwap - self.close) / self._rank(self.vwap + self.close)
 
+    '''
     def alpha054(self) -> pd.DataFrame:
         """
         Alpha#54: ((-1 * ((low - close) * (open^5))) / ((low - high) * (close^5)))
@@ -386,6 +387,7 @@ class Alpha101:
         num = -1 * (self.low - self.close) * self._signed_power(self.open, 5)
         den = (self.low - self.high) * self._signed_power(self.close, 5)
         return num / den
+    '''
 
     def alpha072(self) -> pd.DataFrame:
         """

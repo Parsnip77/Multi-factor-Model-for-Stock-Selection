@@ -3,14 +3,14 @@
   Stage 3 · LightGBM Alpha Synthesis
 ======================================================================
 1. Loading factors_clean.parquet and prices.parquet ...
-   factors shape : (364200, 17)
+   factors shape : (364200, 16)
    prices  shape : (361333, 9)
 
 2. Computing 1-day forward returns ...
 
 3. Merging factors and target labels ...
-   merged shape  : (357978, 19)
-   feature cols  : ['alpha001', 'alpha003', 'alpha006', 'alpha012', 'alpha038', 'alpha040', 'alpha041', 'alpha042', 'alpha054', 'alpha072', 'alpha088', 'alpha094', 'alpha098', 'alpha101', 'alpha_5_day_reversal']
+   merged shape  : (357978, 18)
+   feature cols  : ['alpha001', 'alpha003', 'alpha006', 'alpha012', 'alpha038', 'alpha040', 'alpha041', 'alpha042', 'alpha072', 'alpha088', 'alpha094', 'alpha098', 'alpha101', 'alpha_5_day_reversal']
    training target : cs_rank_return  (cross-sectional pct-rank of forward_return, per trade_date)
 
 ======================================================================
@@ -23,19 +23,19 @@
   Train : 20190102 → 20210126  (n=148,726)
   Val   : 20210127 → 20210804  (n=37,069)
   Test  : 20210806 → 20220216  (n=37,143)
-  Best iteration : 256
+  Best iteration : 375
 
 --- Fold 2 ---
   Train : 20190711 → 20210804  (n=148,587)
   Val   : 20210805 → 20220215  (n=37,141)
   Test  : 20220217 → 20220819  (n=37,176)
-  Best iteration : 309
+  Best iteration : 272
 
 --- Fold 3 ---
   Train : 20200114 → 20220215  (n=148,263)
   Val   : 20220216 → 20220818  (n=37,180)
   Test  : 20220822 → 20230301  (n=37,325)
-  Best iteration : 523
+  Best iteration : 512
 
 --- Fold 4 ---
   Train : 20200724 → 20220818  (n=148,506)
@@ -52,9 +52,9 @@
 ======================================================================
   IC Analysis — ML Synthetic Factor
 ======================================================================
-   IC Mean : +0.0487
-   IC Std  : 0.0952
-   ICIR    : +0.5111
+   IC Mean : +0.0408
+   IC Std  : 0.0976
+   ICIR    : +0.4181
 
    IC chart saved: plots/ml_alpha_ic.png
 
@@ -65,12 +65,12 @@
 Layered Backtest Performance:
 
      Cum Return  Ann Return  Ann Vol  Sharpe  Max DD
-G1      -0.4388     -0.2509   0.1652 -1.7003 -0.5174
-G2      -0.1964     -0.1036   0.1705 -0.7836 -0.3163
-G3       0.0617      0.0304   0.1764  0.0023 -0.2096
-G4       0.2188      0.1040   0.1741  0.4249 -0.1910
-G5       0.2576      0.1214   0.1803  0.5072 -0.2516
-L-S      1.2341      0.4947   0.0860  5.4008 -0.0465
+G1      -0.3554     -0.1971   0.1685 -1.3483 -0.4388
+G2      -0.1707     -0.0893   0.1723 -0.6926 -0.3107
+G3       0.0052      0.0026   0.1706 -0.1605 -0.2532
+G4       0.2430      0.1149   0.1745  0.4867 -0.1900
+G5       0.0984      0.0481   0.1810  0.0998 -0.2617
+L-S      0.6958      0.3022   0.0937  2.9057 -0.0705
 
 ======================================================================
   Feature Importance (Average Across Folds)
@@ -79,21 +79,20 @@ L-S      1.2341      0.4947   0.0860  5.4008 -0.0465
 Average Feature Importance (gain):
 
              feature   importance
-            alpha054 25110.419238
-            alpha038 12946.020555
-            alpha042 11686.292860
-            alpha001 10953.655643
-            alpha041 10693.001562
-alpha_5_day_reversal 10024.856125
-            alpha094  9078.336584
-            alpha012  8917.858967
-            alpha101  7988.279771
-            alpha088  7785.137905
-            alpha040  6769.942058
-            alpha006  6702.127287
-            alpha003  6598.467297
-            alpha072  6597.052841
-            alpha098  5786.490685
+            alpha038 16416.840166
+            alpha042 14913.898594
+            alpha101 13674.561351
+            alpha001 11784.384745
+alpha_5_day_reversal 11044.904249
+            alpha094 10820.675615
+            alpha041 10362.990039
+            alpha012  9329.971928
+            alpha006  8006.049540
+            alpha088  7989.620811
+            alpha072  7626.667360
+            alpha040  7525.093853
+            alpha003  7425.743840
+            alpha098  6695.153339
 
    Saved: plots/feature_importance.png
 
