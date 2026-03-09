@@ -55,9 +55,9 @@ PLOTS_DIR = pathlib.Path("plots")
 RESULT_FILE = pathlib.Path("result_ml.txt")
 
 FORWARD_DAYS: int = 1
-TRAIN_MONTHS: int = 24
-VAL_MONTHS: int = 6
-TEST_MONTHS: int = 6
+TRAIN_MONTHS: int = 16
+VAL_MONTHS: int = 4
+TEST_MONTHS: int = 4
 EMBARGO_DAYS: int = 1        # must be >= FORWARD_DAYS to prevent target leakage
 SHAP_SAMPLE_SIZE: int = 300  # number of rows to subsample for SHAP (speed)
 

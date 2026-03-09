@@ -522,9 +522,9 @@
   | 变量 | 默认值 | 说明 |
   |------|--------|------|
   | `FORWARD_DAYS` | `1` | 未来收益率天数 |
-  | `TRAIN_MONTHS` | `24` | 训练窗口（月） |
-  | `VAL_MONTHS` | `6` | 验证窗口（月） |
-  | `TEST_MONTHS` | `6` | 测试窗口（月） |
+  | `TRAIN_MONTHS` | `16` | 训练窗口（月） |
+  | `VAL_MONTHS` | `4` | 验证窗口（月） |
+  | `TEST_MONTHS` | `4` | 测试窗口（月） |
   | `EMBARGO_DAYS` | `1` | 静默期天数（需 ≥ FORWARD_DAYS） |
   | `SHAP_SAMPLE_SIZE` | `300` | SHAP 分析采样行数 |
 
