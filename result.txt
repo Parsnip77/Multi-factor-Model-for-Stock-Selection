@@ -3,7 +3,7 @@
   Step 1 / 5  —  Loading Parquet files
 ==============================================================
   [OK]  prices.parquet   : 361,333 rows | cols: ['trade_date', 'ts_code', 'open', 'high', 'low', 'close', 'volume', 'adj_factor', 'tradable']
-  [OK]  factors_clean    : 364,200 rows | factors: ['alpha001', 'alpha003', 'alpha006', 'alpha012', 'alpha038', 'alpha040', 'alpha041', 'alpha042', 'alpha072', 'alpha088', 'alpha094', 'alpha098', 'alpha101', 'alpha_5_day_reversal']
+  [OK]  factors_clean    : 364,200 rows | factors: ['alpha001', 'alpha002', 'alpha003', 'alpha006', 'alpha012', 'alpha038', 'alpha040', 'alpha041', 'alpha042', 'alpha072', 'alpha088', 'alpha094', 'alpha098', 'alpha101', 'alpha_5_day_reversal']
 
 ==============================================================
   Step 2 / 5  —  Computing 1-day forward return
@@ -28,6 +28,23 @@ G3       0.2032      0.0392   0.1940  0.0473 -0.2601
 G4       0.0890      0.0179   0.1937 -0.0626 -0.3189
 G5      -0.2380     -0.0549   0.1886 -0.4502 -0.4575
 L-S     -0.5105     -0.1379   0.0850 -1.9750 -0.5163
+  [  ]    Backtest plot saved.
+      not selected  (threshold: |IC mean| > 2.0%  &  |ICIR| > 0.3)
+--------------------------------------------------------------
+  Factor: alpha002
+--------------------------------------------------------------
+  [  ]    IC Mean : +0.0074
+  [  ]    IC Std  : 0.0623
+  [  ]    ICIR    : +0.1188
+  [  ]    IC chart saved.
+  [  ]    Backtest metrics:
+     Cum Return  Ann Return  Ann Vol  Sharpe  Max DD
+G1       0.2372      0.0452   0.1880  0.0809 -0.2681
+G2       0.2854      0.0536   0.1912  0.1232 -0.2730
+G3       0.0148      0.0031   0.1899 -0.1419 -0.3327
+G4       0.3092      0.0576   0.1894  0.1455 -0.2551
+G5       0.2937      0.0550   0.1908  0.1308 -0.2662
+L-S      0.0380      0.0078   0.0646 -0.3438 -0.0949
   [  ]    Backtest plot saved.
       not selected  (threshold: |IC mean| > 2.0%  &  |ICIR| > 0.3)
 --------------------------------------------------------------
@@ -255,7 +272,7 @@ L-S     -0.6170     -0.1807   0.1039 -2.0284 -0.6419
 ==============================================================
   Step 4 / 5  —  Results summary
 ==============================================================
-  [OK]  Effective alphas (3 / 14):
+  [OK]  Effective alphas (3 / 15):
       * alpha038
       * alpha042
       * alpha101

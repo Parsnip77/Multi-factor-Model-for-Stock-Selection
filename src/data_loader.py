@@ -171,8 +171,9 @@ class DataEngine:
     # ------------------------------------------------------------------
 
     def _get_constituents(self) -> List[str]:
-        """Return the index constituents as of the backtest start date.
-
+        """
+        Return the index constituents as of the backtest start date.
+        
         Queries a 31-day window anchored at config.START_DATE so that the
         universe reflects the index composition at the *beginning* of the
         study period.  Using today's constituents would introduce look-ahead

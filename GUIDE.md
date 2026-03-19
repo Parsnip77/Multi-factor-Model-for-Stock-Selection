@@ -79,6 +79,7 @@
   | 因子 | 公式 |
   |------|------|
   | `alpha001` | `rank(ts_argmax(signedpower((ret<0)?stddev(ret,20):close, 2), 5)) - 0.5` |
+  | `alpha002` | `(-1 * correlation(rank(delta(log(volume), 2)), rank(((close - open) / open)), 6))` |
   | `alpha003` | `-1 * correlation(rank(open), rank(volume), 10)` |
   | `alpha006` | `-1 * correlation(open, volume, 10)` |
   | `alpha012` | `sign(delta(volume, 1)) * (-1 * delta(close, 1))` |
@@ -86,7 +87,6 @@
   | `alpha040` | `(-1 * rank(stddev(high, 10))) * correlation(high, volume, 10)` |
   | `alpha041` | `sqrt(high * low) - vwap` |
   | `alpha042` | `rank(vwap - close) / rank(vwap + close)` |
-  | `alpha054` | `(-1 * (low-close) * open^5) / ((low-high) * close^5)` |
   | `alpha072` | `rank(decay_linear(corr((H+L)/2, adv40, 8), 10)) / rank(decay_linear(corr(ts_rank(vwap,3), ts_rank(vol,18), 6), 2))` |
   | `alpha088` | `min(rank(decay_linear((rank(O)+rank(L))-(rank(H)+rank(C)),8)), ts_rank(decay_linear(corr(ts_rank(C,8),ts_rank(adv60,20),8),6),2))` |
   | `alpha094` | `signedpower(rank(vwap - ts_min(vwap,11)), ts_rank(corr(ts_rank(vwap,19), ts_rank(adv60,4), 18), 2)) * -1` |
@@ -534,7 +534,6 @@
   |------|------|
   | `plots/ml_alpha_ic.png` | ML 合成因子 IC 时间序列图（柱状 + 累计 IC 折线） |
   | `plots/ml_alpha_layered.png` | 分层回测累计净值图（G1..G5 + Long-Short） |
-  | `plots/ml_alpha_net.png` | 净收益回测累计净值图 |
   | `plots/feature_importance.png` | 15 个因子的跨折平均特征重要性（gain）条形图 |
   | `plots/shap_beeswarm.png` | SHAP 蜂群图（特征贡献方向与大小） |
   | `result_ml.txt` | 完整文字报告：各折信息 + IC 指标 + 分层绩效表 + 特征重要性排名 |

@@ -283,6 +283,14 @@ class Alpha101:
         sp = self._signed_power(inner, 2.0)
         return self._rank(self._ts_argmax(sp, 5)) - 0.5
 
+    def alpha002(self) -> pd.DataFrame:
+        """
+        Alpha#2: (-1 * correlation(rank(delta(log(volume), 2)), rank(((close - open) / open)), 6))
+        """
+        rk_delta_log_volume = self._rank(self._delta(self._log(self.vol), 2))
+        rk_close_open = self._rank((self.close - self.open) / self.open)
+        return -1 * self._corr(rk_delta_log_volume, rk_close_open, 6)
+
     def alpha003(self) -> pd.DataFrame:
         """
         Alpha#3: (-1 * correlation(rank(open), rank(volume), 10))
